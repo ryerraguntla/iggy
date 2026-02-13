@@ -34,7 +34,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 mod api;
+mod elasticsearch;
+mod fixtures;
 mod http_config_provider;
+mod iceberg;
 mod postgres;
 mod quickwit;
 mod random;
@@ -84,7 +87,7 @@ struct ConnectorsIggyClient {
     client: IggyClient,
 }
 
-fn create_test_messages(count: usize) -> Vec<TestMessage> {
+pub fn create_test_messages(count: usize) -> Vec<TestMessage> {
     let base_timestamp = IggyTimestamp::now().as_micros();
     (1..=count)
         .map(|i| TestMessage {

@@ -27,15 +27,14 @@ pub mod quic_client;
 #[allow(deprecated)]
 pub mod tcp_client;
 #[allow(deprecated)]
-pub mod websocket_client;
-#[allow(deprecated)]
 pub mod test_connectors_runtime;
 #[allow(deprecated)]
 pub mod test_mcp_server;
 #[allow(deprecated)]
 pub mod test_server;
 pub mod test_tls_utils;
-
+#[allow(deprecated)]
+pub mod websocket_client;
 
 #[doc(hidden)]
 pub mod __macro_support {

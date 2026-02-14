@@ -41,8 +41,8 @@ mod iceberg;
 mod postgres;
 mod quickwit;
 mod random;
-mod stdout;
 mod redshift;
+mod stdout;
 
 pub const DEFAULT_TEST_STREAM: &str = "test_stream";
 pub const DEFAULT_TEST_TOPIC: &str = "test_topic";
@@ -168,7 +168,8 @@ impl ConnectorsRuntime {
         connectors_runtime.ensure_started().await;
         self.connectors_runtime = Some(connectors_runtime);
     }
-#[allow(dead_code)]
+
+    #[allow(dead_code)]
     async fn create_client(&self) -> ConnectorsIggyClient {
         let stream_id: Identifier = DEFAULT_TEST_STREAM
             .try_into()
@@ -200,7 +201,8 @@ impl ConnectorsRuntime {
             .expect("Failed to login as root user");
         IggyClient::create(client, None, None)
     }
-#[allow(dead_code)]
+
+    #[allow(dead_code)]
     fn connectors_api_address(&self) -> Option<String> {
         self.connectors_runtime
             .as_ref()
@@ -220,7 +222,8 @@ impl ConnectorsIggyClient {
             .await
             .expect("Failed to send messages to Iggy");
     }
-#[allow(dead_code)]
+
+    #[allow(dead_code)]
     async fn poll_messages(&self) -> Result<PolledMessages, iggy_common::IggyError> {
         let consumer_id: Identifier = TEST_CONSUMER_NAME
             .try_into()

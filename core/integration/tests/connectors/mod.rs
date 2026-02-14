@@ -42,9 +42,6 @@ mod postgres;
 mod quickwit;
 mod random;
 mod stdout;
-
-use iggy_common::IggyTimestamp;
-use serde::{Deserialize, Serialize};
 mod redshift;
 
 pub const DEFAULT_TEST_STREAM: &str = "test_stream";

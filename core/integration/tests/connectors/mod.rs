@@ -46,6 +46,7 @@ mod redshift;
 
 pub const DEFAULT_TEST_STREAM: &str = "test_stream";
 pub const DEFAULT_TEST_TOPIC: &str = "test_topic";
+#[allow(dead_code)]
 const TEST_CONSUMER_NAME: &str = "test_consumer";
 const ONE_DAY_MICROS: u64 = 24 * 60 * 60 * 1_000_000;
 
@@ -77,7 +78,7 @@ struct ConnectorsRuntime {
     iggy_server: TestServer,
     connectors_runtime: Option<TestConnectorsRuntime>,
 }
-
+#[allow(dead_code)]
 struct ConnectorsIggyClient {
     stream_id: Identifier,
     topic_id: Identifier,
@@ -167,7 +168,7 @@ impl ConnectorsRuntime {
         connectors_runtime.ensure_started().await;
         self.connectors_runtime = Some(connectors_runtime);
     }
-
+#[allow(dead_code)]
     async fn create_client(&self) -> ConnectorsIggyClient {
         let stream_id: Identifier = DEFAULT_TEST_STREAM
             .try_into()
@@ -199,14 +200,14 @@ impl ConnectorsRuntime {
             .expect("Failed to login as root user");
         IggyClient::create(client, None, None)
     }
-
+#[allow(dead_code)]
     fn connectors_api_address(&self) -> Option<String> {
         self.connectors_runtime
             .as_ref()
             .map(|r| r.get_http_api_address())
     }
 }
-
+#[allow(dead_code)]
 impl ConnectorsIggyClient {
     async fn send_messages(&self, messages: &mut [IggyMessage]) {
         self.client
@@ -219,7 +220,7 @@ impl ConnectorsIggyClient {
             .await
             .expect("Failed to send messages to Iggy");
     }
-
+#[allow(dead_code)]
     async fn poll_messages(&self) -> Result<PolledMessages, iggy_common::IggyError> {
         let consumer_id: Identifier = TEST_CONSUMER_NAME
             .try_into()

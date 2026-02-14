@@ -16,36 +16,39 @@
 # under the License.
 
 [package]
-name = "iggy_connector_elasticsearch_sink"
-version = "0.2.2-edge.1"
-description = "Iggy Elasticsearch sink connector"
-edition = "2024"
+name = "iggy_connector_redshift_sink"
+version = "0.1.0"
+description = "Iggy Redshift sink connector for loading stream messages into Amazon Redshift via S3 staging"
+edition = "2021"
 license = "Apache-2.0"
-keywords = ["iggy", "messaging", "streaming", "elastic", "elasticsearch"]
+keywords = ["iggy", "messaging", "streaming", "redshift", "sink", "aws"]
 categories = ["command-line-utilities", "database", "network-programming"]
 homepage = "https://iggy.apache.org"
 documentation = "https://iggy.apache.org/docs"
 repository = "https://github.com/apache/iggy"
-readme = "../../README.md"
+readme = "README.md"
 
 [package.metadata.cargo-machete]
-ignored = ["dashmap", "once_cell", "futures", "prost"]
-#ignored = ["dashmap", "once_cell", "futures", "simd-json", "prost"]
+ignored = ["dashmap", "once_cell", "futures", "simd-json", "prost"]
 
 [lib]
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
 async-trait = { workspace = true }
-base64 = { workspace = true }
-#chrono = { workspace = true }
+chrono = { workspace = true }
 dashmap = { workspace = true }
-elasticsearch = { workspace = true }
-iggy_common = { workspace = true }
+futures = { workspace = true }
 iggy_connector_sdk = { workspace = true }
 once_cell = { workspace = true }
+rust-s3 = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 simd-json = { workspace = true }
+sqlx = { version = "0.8", features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "chrono",
+] }
 tokio = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }

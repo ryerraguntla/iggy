@@ -16,31 +16,17 @@
  * under the License.
  */
 
-pub mod bench_utils;
-pub mod file;
-pub mod harness;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
-#[allow(deprecated)]
-pub use harness_derive::iggy_harness;
-pub mod http_client;
-pub mod quic_client;
-#[allow(deprecated)]
-pub mod tcp_client;
-#[allow(deprecated)]
-pub mod test_connectors_runtime;
-#[allow(deprecated)]
-pub mod test_mcp_server;
-#[allow(deprecated)]
-pub mod test_server;
-pub mod test_tls_utils;
-#[allow(deprecated)]
-pub mod websocket_client;
+pub fn get_root_path() -> PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set!");
+    PathBuf::from(manifest_dir)
+}
 
-#[doc(hidden)]
-pub mod __macro_support {
-    pub use crate::harness::{
-        ClientConfig, McpClient, McpConfig, TestHarness, TestServerConfig, TlsConfig,
-    };
-    pub use iggy::prelude::ClientWrapper;
-    pub use iggy_common::TransportProtocol;
+pub fn file_exists<S>(file_path: &S) -> bool
+where
+    S: AsRef<OsStr> + ?Sized,
+{
+    Path::new(file_path).is_file()
 }

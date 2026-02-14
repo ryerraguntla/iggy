@@ -45,7 +45,7 @@
 pub mod config;
 mod context;
 mod error;
-mod fixture;
+pub mod fixtures;
 pub mod handle;
 mod helpers;
 mod orchestrator;
@@ -70,4 +70,4 @@ pub use helpers::{
     USER_PASSWORD, assert_clean_system, create_user, delete_user, login_root, login_user,
 };
 
-pub use fixture::TestFixture;
+pub use fixtures::TestFixture;

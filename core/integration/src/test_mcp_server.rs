@@ -17,7 +17,7 @@
  */
 
 use assert_cmd::prelude::CommandCargoExt;
-use rand::Rng;
+use rand::{Rng, rng};
 use rmcp::{
     RoleClient, ServiceExt,
     model::{ClientCapabilities, ClientInfo, Implementation, InitializeRequestParam},
@@ -199,7 +199,7 @@ impl TestMcpServer {
     }
 
     fn get_random_server_address() -> SocketAddr {
-        let mut rng = rand::thread_rng();
+        let mut rng = rng();
         let max_retries = 100;
 
         for _ in 0..max_retries {

@@ -25,7 +25,7 @@ use futures::executor::block_on;
 use iggy::prelude::UserStatus::Active;
 use iggy::prelude::*;
 use iggy_common::TransportProtocol;
-use rand::Rng;
+use rand::{Rng, rng};
 use server::configs::server::ServerConfig;
 use std::collections::HashMap;
 use std::fs;
@@ -120,7 +120,7 @@ impl TestServer {
             Ok(parallelism) => {
                 let available_cpus = parallelism.get();
                 if available_cpus >= 4 {
-                    let mut rng = rand::thread_rng();
+                    let mut rng = rng();
                     let max_start = available_cpus - 4;
                     let start = rng.gen_range(0..=max_start);
                     let end = start + 4;

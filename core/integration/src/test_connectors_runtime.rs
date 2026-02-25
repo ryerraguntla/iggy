@@ -18,7 +18,7 @@
  */
 
 use assert_cmd::prelude::CommandCargoExt;
-use rand::Rng;
+use rand::{Rng, rng};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -226,7 +226,7 @@ impl TestConnectorsRuntime {
     }
 
     fn get_random_server_address() -> SocketAddr {
-        let mut rng = rand::thread_rng();
+        let mut rng = rng();
         let max_retries = 100;
 
         for _ in 0..max_retries {

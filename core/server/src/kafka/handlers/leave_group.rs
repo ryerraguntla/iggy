@@ -1,5 +1,4 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
+/* Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
  * regarding copyright ownership.  The ASF licenses this file
@@ -17,18 +16,27 @@
  * under the License.
  */
 
-pub mod cache_indexes;
-pub mod cluster;
-pub mod defaults;
-pub mod displays;
-pub mod http;
-pub mod kafka;
-pub mod quic;
-pub mod server;
-pub mod sharding;
-pub mod system;
-pub mod tcp;
-pub mod validators;
-pub mod websocket;
+//! `LeaveGroup` handler (API key 13).
+//!
+//! Clears the consumer group state from `KafkaSession` and returns NONE.
 
-pub const COMPONENT: &str = "CONFIG";
+use crate::kafka::protocol::types::{write_empty_tagged_fields, write_i16, write_i32};
+use crate::kafka::session::KafkaSession;
+use bytes::{Bytes, BytesMut};
+
+pub async fn handle(
+    _api_version: i16,
+    _payload: &Bytes,
+    flexible: bool,
+    kafka_session: &mut KafkaSession,
+) -> Vec<u8> {
+    kafka_session.leave_group();
+
+    let mut body = BytesMut::new();
+    write_i32(&mut body, 0); // throttle_time_ms
+    write_i16(&mut body, 0); // error_code = NONE
+    if flexible {
+        write_empty_tagged_fields(&mut body);
+    }
+    body.freeze().to_vec()
+}

@@ -16,16 +16,21 @@
  * under the License.
  */
 
-mod http_server;
-mod kafka_server;
-mod message_pump;
-mod quic_server;
-mod tcp_server;
-mod websocket_server;
+//! `Heartbeat` handler (API key 12).
+//!
+//! Consumer group members send this periodically to signal they are alive.
+//! We always acknowledge with NONE (0) because Iggy's consumer group
+//! membership model does not time out idle members the same way as Kafka.
 
-pub use http_server::spawn_http_server;
-pub use kafka_server::spawn_kafka_server;
-pub use message_pump::spawn_message_pump;
-pub use quic_server::spawn_quic_server;
-pub use tcp_server::spawn_tcp_server;
-pub use websocket_server::spawn_websocket_server;
+use crate::kafka::protocol::types::{write_empty_tagged_fields, write_i16, write_i32};
+use bytes::{Bytes, BytesMut};
+
+pub fn handle(_api_version: i16, _payload: &Bytes, flexible: bool) -> Vec<u8> {
+    let mut body = BytesMut::new();
+    write_i32(&mut body, 0); // throttle_time_ms
+    write_i16(&mut body, 0); // error_code = NONE
+    if flexible {
+        write_empty_tagged_fields(&mut body);
+    }
+    body.freeze().to_vec()
+}

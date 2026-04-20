@@ -544,6 +544,10 @@ pub async fn handle_event(shard: &Rc<IggyShard>, event: ShardEvent) -> Result<()
                     shard.websocket_bound_address.set(Some(address));
                     let _ = shard.config_writer_notify.try_send(());
                 }
+                TransportProtocol::Kafka => {
+                    shard.kafka_bound_address.set(Some(address));
+                    let _ = shard.config_writer_notify.try_send(());
+                }
             }
             Ok(())
         }

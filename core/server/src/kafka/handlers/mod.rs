@@ -1,5 +1,4 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
+/* Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
  * regarding copyright ownership.  The ASF licenses this file
@@ -17,18 +16,16 @@
  * under the License.
  */
 
-pub mod cache_indexes;
-pub mod cluster;
-pub mod defaults;
-pub mod displays;
-pub mod http;
-pub mod kafka;
-pub mod quic;
-pub mod server;
-pub mod sharding;
-pub mod system;
-pub mod tcp;
-pub mod validators;
-pub mod websocket;
-
-pub const COMPONENT: &str = "CONFIG";
+pub mod api_versions;
+pub mod fetch;
+pub mod find_coordinator;
+pub mod heartbeat;
+pub mod join_group;
+pub mod leave_group;
+pub mod list_offsets;
+pub mod metadata;
+pub mod offset_commit;
+pub mod offset_fetch;
+pub mod produce;
+pub mod sasl;
+pub mod sync_group;

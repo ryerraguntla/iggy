@@ -74,5 +74,6 @@ pub(crate) fn transport_to_u8(transport: &iggy_common::TransportProtocol) -> u8 
         iggy_common::TransportProtocol::Quic => 2,
         iggy_common::TransportProtocol::Http => 3,
         iggy_common::TransportProtocol::WebSocket => 4,
+        iggy_common::TransportProtocol::Kafka => 5,
     }
 }

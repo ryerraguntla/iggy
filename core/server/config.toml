@@ -205,6 +205,39 @@ nodelay = false
 # close or shutdown call has been received
 linger = "0 s"
 
+# Kafka-protocol-compatible TCP listener configuration.
+# When enabled, Iggy exposes a port that speaks the Kafka wire protocol,
+# allowing standard Kafka clients (librdkafka, kafka-go, franz-go, etc.)
+# to connect without any client-side changes.
+[kafka]
+# Set to true to activate the Kafka protocol listener.
+enabled = false
+
+# Network address and port for the Kafka listener.
+# 9092 is the standard Kafka port. Change to a different port if needed.
+address = "0.0.0.0:9092"
+
+# The Iggy stream that serves as the Kafka namespace.
+# All Kafka topics are mapped to topics inside this stream.
+# This stream must be created before Kafka clients can produce/consume.
+kafka_stream = "kafka"
+
+[kafka.socket]
+# When false, OS defaults are used for all socket options below.
+override_defaults = false
+
+# SO_RCVBUF: maximum receive buffer size.
+recv_buffer_size = "100 KB"
+
+# SO_SNDBUF: maximum send buffer size.
+send_buffer_size = "100 KB"
+
+# SO_KEEPALIVE: periodically probe the connection to detect dead peers.
+keepalive = false
+
+# TCP_NODELAY: disable Nagle algorithm (recommended for low-latency workloads).
+nodelay = true
+
 # QUIC protocol configuration.
 [quic]
 # Controls whether the QUIC server is enabled.

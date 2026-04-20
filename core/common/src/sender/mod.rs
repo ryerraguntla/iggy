@@ -150,6 +150,30 @@ impl SenderKind {
         async fn send_error_response(&mut self, error: IggyError) -> Result<(), IggyError>;
         async fn shutdown(&mut self) -> Result<(), IggyError>;
     }
+
+    /// Write raw bytes to the underlying stream without any Iggy framing.
+    /// Used by the Kafka protocol handler to send pre-framed Kafka responses.
+    pub async fn write_raw(&mut self, data: &bytes::Bytes) -> Result<(), IggyError> {
+        use compio::io::AsyncWriteExt;
+        match self {
+            Self::Tcp(s) => {
+                let stream = s.stream.as_mut().ok_or(IggyError::ConnectionClosed)?;
+                stream
+                    .write_all(data.to_vec())
+                    .await
+                    .0
+                    .map_err(|_| IggyError::TcpError)
+            }
+            Self::TcpTls(s) => {
+                s.stream
+                    .write_all(data.to_vec())
+                    .await
+                    .0
+                    .map_err(|_| IggyError::TcpError)
+            }
+            _ => Err(IggyError::InvalidCommand),
+        }
+    }
 }
 
 const STATUS_OK: &[u8] = &[0; 4];

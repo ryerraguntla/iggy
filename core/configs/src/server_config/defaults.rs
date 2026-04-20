@@ -32,6 +32,7 @@ use super::system::{
     MessageDeduplicationConfig, PartitionConfig, RecoveryConfig, RuntimeConfig, SegmentConfig,
     StateConfig, StreamConfig, SystemConfig, TopicConfig,
 };
+use super::kafka::{KafkaConfig, KafkaSocketConfig};
 use super::tcp::TcpSocketConfig;
 use super::tcp::{TcpConfig, TcpTlsConfig};
 use super::websocket::{WebSocketConfig, WebSocketTlsConfig};
@@ -58,8 +59,32 @@ impl Default for ServerConfig {
             tcp: TcpConfig::default(),
             websocket: WebSocketConfig::default(),
             http: HttpConfig::default(),
+            kafka: KafkaConfig::default(),
             telemetry: TelemetryConfig::default(),
             cluster: ClusterConfig::default(),
+        }
+    }
+}
+
+impl Default for KafkaConfig {
+    fn default() -> KafkaConfig {
+        KafkaConfig {
+            enabled: false,
+            address: "0.0.0.0:9092".to_string(),
+            kafka_stream: "kafka".to_string(),
+            socket: KafkaSocketConfig::default(),
+        }
+    }
+}
+
+impl Default for KafkaSocketConfig {
+    fn default() -> KafkaSocketConfig {
+        KafkaSocketConfig {
+            override_defaults: false,
+            recv_buffer_size: "100 KB".to_string(),
+            send_buffer_size: "100 KB".to_string(),
+            keepalive: false,
+            nodelay: true,
         }
     }
 }

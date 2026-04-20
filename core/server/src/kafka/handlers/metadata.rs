@@ -28,8 +28,8 @@
 use crate::kafka::error::{KafkaErrorCode, iggy_to_kafka_error};
 use crate::kafka::protocol::types::{
     read_compact_string, read_i16, read_i32, read_string, read_unsigned_varint, skip_tagged_fields,
-    write_compact_nullable_string, write_compact_string, write_empty_tagged_fields, write_i16,
-    write_i32, write_i8, write_nullable_string, write_string, write_unsigned_varint,
+    write_compact_nullable_string, write_compact_string, write_empty_tagged_fields, write_i8,
+    write_i16, write_i32, write_nullable_string, write_string, write_unsigned_varint,
 };
 use crate::shard::IggyShard;
 use crate::streaming::session::Session;
@@ -82,16 +82,19 @@ pub async fn handle(
         .get()
         .map(|a| a.to_string())
         .unwrap_or_else(|| shard.config.kafka.address.clone());
-    let host = bound_addr.split(':').next().unwrap_or("127.0.0.1").to_string();
+    let host = bound_addr
+        .split(':')
+        .next()
+        .unwrap_or("127.0.0.1")
+        .to_string();
     let port: i32 = bound_addr
         .split(':')
-        .last()
+        .next_back()
         .and_then(|p| p.parse().ok())
         .unwrap_or(9092);
 
     // Collect topic metadata: (name, partition_count, error_code)
-    let topics_meta =
-        collect_topic_metadata(shard, session, &requested, kafka_stream).await;
+    let topics_meta = collect_topic_metadata(shard, session, &requested, kafka_stream).await;
 
     let mut body = BytesMut::new();
     write_i32(&mut body, 0); // throttle_time_ms
@@ -218,7 +221,9 @@ async fn collect_topic_metadata(
         };
         match shard.resolve_topic(&stream_id, &topic_id) {
             Ok(resolved) => {
-                let count = shard.metadata.partitions_count(resolved.stream_id, resolved.topic_id);
+                let count = shard
+                    .metadata
+                    .partitions_count(resolved.stream_id, resolved.topic_id);
                 result.push((name, count, 0i16));
             }
             Err(e) => {
@@ -236,7 +241,7 @@ pub async fn handle_create_topics(
     payload: &Bytes,
     flexible: bool,
     shard: &Rc<IggyShard>,
-    session: &Session,
+    _session: &Session,
 ) -> Vec<u8> {
     use iggy_common::Identifier;
 
@@ -258,7 +263,7 @@ pub async fn handle_create_topics(
         } else {
             read_string(&mut buf)
         };
-        let num_partitions = read_i32(&mut buf);
+        let _num_partitions = read_i32(&mut buf);
         let _replication_factor = read_i16(&mut buf);
         // Skip assignments and configs arrays
         let assign_count = if flexible {

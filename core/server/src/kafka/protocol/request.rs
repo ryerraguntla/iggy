@@ -33,7 +33,9 @@
 //!   [tagged_fields if flexible]  [API-specific payload ...]
 //! ```
 
-use super::types::{read_i16, read_i32, read_nullable_string, read_compact_nullable_string, skip_tagged_fields};
+use super::types::{
+    read_compact_nullable_string, read_i16, read_i32, read_nullable_string, skip_tagged_fields,
+};
 use bytes::Bytes;
 
 /// Parsed Kafka request header (versions 0–2; v2 adds tagged fields).

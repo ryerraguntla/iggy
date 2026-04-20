@@ -42,7 +42,7 @@ use crate::kafka::session::KafkaSession;
 use crate::shard::IggyShard;
 use crate::streaming::session::Session;
 use async_channel::Receiver;
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use futures::FutureExt;
 use iggy_common::SenderKind;
 use std::rc::Rc;
@@ -102,7 +102,7 @@ pub async fn handle_kafka_connection(
         let flexible = request::is_flexible(api_key_val, api_version);
 
         // ── Step 4: parse request header ────────────────────────────────────
-        let mut payload_bytes = Bytes::from(payload_buf.freeze());
+        let mut payload_bytes = payload_buf.freeze();
         let header = RequestHeader::parse(&mut payload_bytes, flexible);
         let correlation_id = header.correlation_id;
 
@@ -128,7 +128,7 @@ pub async fn handle_kafka_connection(
             let body = not_authenticated_body(api_key_val, flexible);
             let frame = frame_response(correlation_id, &body, flexible);
             let frame_frozen = frame.freeze();
-        let _ = sender.write_raw(&frame_frozen).await;
+            let _ = sender.write_raw(&frame_frozen).await;
             continue;
         }
 
@@ -262,7 +262,7 @@ pub async fn handle_kafka_connection(
     }
 }
 
-fn not_authenticated_body(api_key: i16, flexible: bool) -> Vec<u8> {
+fn not_authenticated_body(_api_key: i16, flexible: bool) -> Vec<u8> {
     use crate::kafka::protocol::types::{write_empty_tagged_fields, write_i16, write_i32};
     let mut buf = BytesMut::new();
     write_i32(&mut buf, 0); // throttle_time_ms

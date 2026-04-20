@@ -30,7 +30,7 @@
 
 use crate::kafka::error::iggy_to_kafka_error;
 use crate::kafka::protocol::types::{
-    read_compact_string, read_i32, read_i64, read_i8, read_string, read_unsigned_varint,
+    read_compact_string, read_i8, read_i32, read_i64, read_string, read_unsigned_varint,
     skip_tagged_fields, write_compact_string, write_empty_tagged_fields, write_i16, write_i32,
     write_i64, write_string, write_unsigned_varint,
 };
@@ -42,6 +42,9 @@ use bytes::{Bytes, BytesMut};
 use iggy_common::{Consumer, ConsumerKind, Identifier, PollingStrategy};
 use std::rc::Rc;
 use tracing::warn;
+
+type PartitionFetchResult = (i32, i16, i64, Vec<u8>);
+type TopicFetchResults = Vec<(String, Vec<PartitionFetchResult>)>;
 
 pub async fn handle(
     api_version: i16,
@@ -80,22 +83,21 @@ pub async fn handle(
     };
 
     let consumer = Consumer {
-        kind: if let Some(gid) = &kafka_session.group_id {
+        kind: if kafka_session.group_id.is_some() {
             ConsumerKind::ConsumerGroup
         } else {
             ConsumerKind::Consumer
         },
         id: if let Some(gid) = &kafka_session.group_id {
-            Identifier::named(gid).unwrap_or_else(|_| {
-                Identifier::numeric(kafka_session.client_id).unwrap()
-            })
+            Identifier::named(gid)
+                .unwrap_or_else(|_| Identifier::numeric(kafka_session.client_id).unwrap())
         } else {
             Identifier::numeric(kafka_session.client_id).unwrap()
         },
     };
 
     // (topic_name, [(partition_index, error_code, high_watermark, records_bytes)])
-    let mut topic_results: Vec<(String, Vec<(i32, i16, i64, Vec<u8>)>)> = Vec::new();
+    let mut topic_results: TopicFetchResults = Vec::new();
 
     for _ in 0..topic_count.max(0) {
         let topic_name = if flexible {
@@ -117,8 +119,9 @@ pub async fn handle(
             }
         };
 
-        let resolved_topic = shard.resolve_topic_for_poll(session.get_user_id(), &stream_id, &topic_id);
-        let mut partition_results: Vec<(i32, i16, i64, Vec<u8>)> = Vec::new();
+        let resolved_topic =
+            shard.resolve_topic_for_poll(session.get_user_id(), &stream_id, &topic_id);
+        let mut partition_results: Vec<PartitionFetchResult> = Vec::new();
 
         for _ in 0..partition_count.max(0) {
             let partition_index = read_i32(&mut buf);
@@ -137,14 +140,20 @@ pub async fn handle(
             let (error_code, high_watermark, records) = match &resolved_topic {
                 Ok(rt) => {
                     let strategy = PollingStrategy::offset(fetch_offset as u64);
-                    let count = ((partition_max_bytes as u32) / 1024).max(1).min(1000);
+                    let count = ((partition_max_bytes as u32) / 1024).clamp(1, 1000);
                     let args = PollingArgs::new(strategy, count, false);
 
                     match shard
-                        .poll_messages(session.client_id, *rt, consumer.clone(), Some(partition_index as u32 + 1), args)
+                        .poll_messages(
+                            session.client_id,
+                            *rt,
+                            consumer.clone(),
+                            Some(partition_index as u32 + 1),
+                            args,
+                        )
                         .await
                     {
-                        Ok((_meta, batch)) => {
+                        Ok((_meta, _batch)) => {
                             // TODO(kafka): Convert IggyMessagesBatchSet to Kafka
                             // RecordBatch bytes.  The RecordBatch encoding requires:
                             //   1. A 49-byte header (base_offset, crc, attributes, etc.)
@@ -177,7 +186,7 @@ pub async fn handle(
 }
 
 fn build_fetch_response(
-    topic_results: &[(String, Vec<(i32, i16, i64, Vec<u8>)>)],
+    topic_results: &[(String, Vec<PartitionFetchResult>)],
     api_version: i16,
     flexible: bool,
 ) -> Vec<u8> {

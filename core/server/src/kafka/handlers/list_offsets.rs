@@ -28,7 +28,7 @@
 
 use crate::kafka::error::iggy_to_kafka_error;
 use crate::kafka::protocol::types::{
-    read_compact_string, read_i32, read_i64, read_i8, read_string, read_unsigned_varint,
+    read_compact_string, read_i8, read_i32, read_i64, read_string, read_unsigned_varint,
     skip_tagged_fields, write_compact_string, write_empty_tagged_fields, write_i16, write_i32,
     write_i64, write_string, write_unsigned_varint,
 };
@@ -39,19 +39,25 @@ use iggy_common::Identifier;
 use std::rc::Rc;
 
 const EARLIEST_TIMESTAMP: i64 = -2;
-const LATEST_TIMESTAMP: i64 = -1;
+
+type PartitionOffsetResult = (i32, i16, i64);
+type TopicOffsetResults = Vec<(String, Vec<PartitionOffsetResult>)>;
 
 pub async fn handle(
     api_version: i16,
     payload: &Bytes,
     flexible: bool,
     shard: &Rc<IggyShard>,
-    session: &Session,
+    _session: &Session,
 ) -> Vec<u8> {
     let mut buf = payload.clone();
 
     let _replica_id = read_i32(&mut buf);
-    let _isolation_level = if api_version >= 2 { read_i8(&mut buf) } else { 0 };
+    let _isolation_level = if api_version >= 2 {
+        read_i8(&mut buf)
+    } else {
+        0
+    };
 
     let topic_count = if flexible {
         (read_unsigned_varint(&mut buf) as i64) - 1
@@ -66,7 +72,7 @@ pub async fn handle(
     };
 
     // Vec of (topic_name, Vec<(partition_index, error_code, offset)>)
-    let mut topic_results: Vec<(String, Vec<(i32, i16, i64)>)> = Vec::new();
+    let mut topic_results: TopicOffsetResults = Vec::new();
 
     for _ in 0..topic_count.max(0) {
         let topic_name = if flexible {
@@ -96,7 +102,7 @@ pub async fn handle(
         };
 
         let resolved = shard.resolve_topic(&stream_id, &topic_id);
-        let mut partition_results: Vec<(i32, i16, i64)> = Vec::new();
+        let mut partition_results: Vec<PartitionOffsetResult> = Vec::new();
 
         for _ in 0..partition_count.max(0) {
             let partition_index = read_i32(&mut buf);
@@ -111,10 +117,11 @@ pub async fn handle(
             let (error_code, offset) = match &resolved {
                 Ok(rt) => {
                     let partition_id = partition_index as usize + 1; // Iggy is 1-indexed
-                    match shard
-                        .metadata
-                        .get_partition_stats_by_ids(rt.stream_id, rt.topic_id, partition_id)
-                    {
+                    match shard.metadata.get_partition_stats_by_ids(
+                        rt.stream_id,
+                        rt.topic_id,
+                        partition_id,
+                    ) {
                         Some(stats) => {
                             let offset = if timestamp == EARLIEST_TIMESTAMP {
                                 0i64 // earliest always starts at 0
@@ -123,11 +130,14 @@ pub async fn handle(
                             };
                             (0i16, offset)
                         }
-                        None => (iggy_to_kafka_error(&iggy_common::IggyError::PartitionNotFound(
-                            partition_id,
-                            topic_id.clone(),
-                            stream_id.clone(),
-                        )), -1i64),
+                        None => (
+                            iggy_to_kafka_error(&iggy_common::IggyError::PartitionNotFound(
+                                partition_id,
+                                topic_id.clone(),
+                                stream_id.clone(),
+                            )),
+                            -1i64,
+                        ),
                     }
                 }
                 Err(e) => (iggy_to_kafka_error(e), -1i64),

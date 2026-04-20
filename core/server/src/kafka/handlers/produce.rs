@@ -48,19 +48,22 @@
 
 use crate::kafka::error::iggy_to_kafka_error;
 use crate::kafka::protocol::types::{
-    read_compact_nullable_string, read_compact_string, read_i16, read_i32, read_i64, read_i8,
-    read_nullable_string, read_string, read_unsigned_varint, skip_tagged_fields, write_compact_string,
-    write_empty_tagged_fields, write_i16, write_i32, write_i64, write_string, write_unsigned_varint,
+    read_compact_nullable_string, read_compact_string, read_i16, read_i32,
+    read_nullable_string, read_string, read_unsigned_varint, skip_tagged_fields,
+    write_compact_string, write_empty_tagged_fields, write_i16, write_i32, write_i64, write_string,
+    write_unsigned_varint,
 };
 use crate::kafka::session::KafkaSession;
 use crate::shard::IggyShard;
 use crate::shard::transmission::message::ResolvedPartition;
-use crate::streaming::segments::{IggyIndexesMut, IggyMessagesBatchMut};
 use crate::streaming::session::Session;
 use bytes::{Buf, Bytes, BytesMut};
-use iggy_common::{Identifier, PartitioningKind};
+use iggy_common::Identifier;
 use std::rc::Rc;
 use tracing::warn;
+
+type PartitionResult = (i32, i16, i64);
+type TopicResults = Vec<(String, Vec<PartitionResult>)>;
 
 pub async fn handle(
     api_version: i16,
@@ -96,7 +99,7 @@ pub async fn handle(
     };
 
     // (topic_name, [(partition_index, error_code, base_offset)])
-    let mut topic_results: Vec<(String, Vec<(i32, i16, i64)>)> = Vec::new();
+    let mut topic_results: TopicResults = Vec::new();
 
     for _ in 0..topic_count.max(0) {
         let topic_name = if flexible {
@@ -118,8 +121,9 @@ pub async fn handle(
             }
         };
 
-        let resolved_topic = shard.resolve_topic_for_append(session.get_user_id(), &stream_id, &topic_id);
-        let mut partition_results: Vec<(i32, i16, i64)> = Vec::new();
+        let resolved_topic =
+            shard.resolve_topic_for_append(session.get_user_id(), &stream_id, &topic_id);
+        let mut partition_results: Vec<PartitionResult> = Vec::new();
 
         for _ in 0..partition_count.max(0) {
             let partition_index = read_i32(&mut buf);
@@ -158,7 +162,7 @@ pub async fn handle(
                     // works end-to-end.  Replace the block below with real
                     // conversion logic before enabling production traffic.
                     let _ = batch_bytes;
-                    let partition = ResolvedPartition {
+                    let _partition = ResolvedPartition {
                         stream_id: rt.stream_id,
                         topic_id: rt.topic_id,
                         partition_id: partition_index as usize + 1,
@@ -187,7 +191,7 @@ pub async fn handle(
 }
 
 fn build_produce_response(
-    topic_results: &[(String, Vec<(i32, i16, i64)>)],
+    topic_results: &[(String, Vec<PartitionResult>)],
     api_version: i16,
     flexible: bool,
 ) -> Vec<u8> {

@@ -33,6 +33,9 @@ use bytes::{Bytes, BytesMut};
 use iggy_common::{Consumer, ConsumerKind, Identifier};
 use std::rc::Rc;
 
+type PartitionOffsetResult = (i32, i16, i64);
+type TopicOffsetResults = Vec<(String, Vec<PartitionOffsetResult>)>;
+
 pub async fn handle(
     _api_version: i16,
     payload: &Bytes,
@@ -66,7 +69,7 @@ pub async fn handle(
         },
     };
 
-    let mut topic_results: Vec<(String, Vec<(i32, i16, i64)>)> = Vec::new();
+    let mut topic_results: TopicOffsetResults = Vec::new();
 
     for _ in 0..topic_count.max(0) {
         let topic_name = if flexible {

@@ -49,7 +49,7 @@ pub async fn handle(
         .to_string();
     let port: i32 = bound_addr
         .split(':')
-        .last()
+        .next_back()
         .and_then(|p| p.parse().ok())
         .unwrap_or(9092);
     let node_id = shard.id as i32;

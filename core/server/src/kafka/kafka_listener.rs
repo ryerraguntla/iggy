@@ -33,7 +33,7 @@
 use crate::kafka::connection_handler::handle_kafka_connection;
 use crate::kafka::session::KafkaSession;
 use crate::shard::IggyShard;
-use crate::shard::task_registry::{ShutdownToken, TaskRegistry};
+use crate::shard::task_registry::ShutdownToken;
 use crate::shard::transmission::event::ShardEvent;
 use crate::tcp::tcp_listener::cleanup_connection;
 use compio::net::{SocketOpts, TcpListener};
@@ -75,9 +75,7 @@ pub async fn start(
     let listener = create_listener(addr)
         .await
         .map_err(|_| IggyError::CannotBindToSocket(addr.to_string()))
-        .error(|err: &IggyError| {
-            format!("Failed to bind {server_name} to {addr}: {err}")
-        })?;
+        .error(|err: &IggyError| format!("Failed to bind {server_name} to {addr}: {err}"))?;
 
     let actual_addr = listener.local_addr().map_err(|e| {
         error!("Failed to read local address: {e}");

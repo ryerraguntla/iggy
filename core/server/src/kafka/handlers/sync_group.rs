@@ -27,11 +27,7 @@ use crate::kafka::protocol::types::{
 };
 use bytes::{Bytes, BytesMut};
 
-pub async fn handle(
-    _api_version: i16,
-    _payload: &Bytes,
-    flexible: bool,
-) -> Vec<u8> {
+pub async fn handle(_api_version: i16, _payload: &Bytes, flexible: bool) -> Vec<u8> {
     let mut body = BytesMut::new();
     write_i32(&mut body, 0); // throttle_time_ms
     write_i16(&mut body, 0); // error_code = NONE

@@ -30,7 +30,7 @@
 
 use crate::kafka::error::KafkaErrorCode;
 use crate::kafka::protocol::types::{
-    read_bytes, read_compact_bytes, read_compact_string, read_string, read_unsigned_varint,
+    read_bytes, read_compact_bytes, read_compact_string, read_string,
     write_bytes, write_compact_bytes, write_compact_string, write_empty_tagged_fields, write_i16,
     write_i32, write_i64, write_nullable_string, write_string, write_unsigned_varint,
 };
@@ -119,11 +119,17 @@ pub fn handle_authenticate(
                     "Kafka SASL/PLAIN authentication failed for '{}': {e}",
                     std::str::from_utf8(parts[1]).unwrap_or("?")
                 );
-                (KafkaErrorCode::SaslAuthenticationFailed as i16, Some("Authentication failed"))
+                (
+                    KafkaErrorCode::SaslAuthenticationFailed as i16,
+                    Some("Authentication failed"),
+                )
             }
         }
     } else {
-        (KafkaErrorCode::SaslAuthenticationFailed as i16, Some("Malformed SASL token"))
+        (
+            KafkaErrorCode::SaslAuthenticationFailed as i16,
+            Some("Malformed SASL token"),
+        )
     };
 
     let mut body = BytesMut::new();

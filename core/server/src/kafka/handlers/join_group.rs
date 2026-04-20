@@ -27,7 +27,7 @@
 //! that `Heartbeat`, `SyncGroup`, and `LeaveGroup` can reference them.
 
 use crate::kafka::protocol::types::{
-    read_bytes, read_compact_bytes, read_compact_nullable_string, read_compact_string, read_i16,
+    read_bytes, read_compact_bytes, read_compact_nullable_string, read_compact_string,
     read_i32, read_nullable_string, read_string, read_unsigned_varint, skip_tagged_fields,
     write_bytes, write_compact_bytes, write_compact_nullable_string, write_compact_string,
     write_empty_tagged_fields, write_i16, write_i32, write_nullable_string, write_string,
@@ -88,7 +88,7 @@ pub async fn handle(
     for _ in 0..proto_count.max(0) {
         if flexible {
             read_compact_string(&mut buf); // name
-            read_compact_bytes(&mut buf);  // metadata
+            read_compact_bytes(&mut buf); // metadata
             skip_tagged_fields(&mut buf);
         } else {
             read_string(&mut buf);

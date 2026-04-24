@@ -72,6 +72,7 @@ impl Default for KafkaConfig {
             enabled: false,
             address: "0.0.0.0:9092".to_string(),
             kafka_stream: "kafka".to_string(),
+            require_sasl: true,
             socket: KafkaSocketConfig::default(),
         }
     }

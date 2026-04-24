@@ -227,6 +227,7 @@ protox-parse = "0.9.0"
 quinn = "0.11.9"
 quote = "1"
 rand = "0.10.0"
+rskafka = { version = "0.4", features = ["compression-gzip"] }
 rand_xoshiro = "0.8.0"
 rayon = "1.11.0"
 rcgen = "0.14.7"

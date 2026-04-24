@@ -81,6 +81,7 @@ fn process_cluster_metadata(
                 TransportProtocol::Quic => leader_node.endpoints.quic,
                 TransportProtocol::Http => leader_node.endpoints.http,
                 TransportProtocol::WebSocket => leader_node.endpoints.websocket,
+                TransportProtocol::Kafka => 0,
             };
             let leader_address = format!("{}:{}", leader_node.ip, leader_port);
 

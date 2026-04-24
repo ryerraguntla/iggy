@@ -35,6 +35,7 @@ mod cluster;
 mod config_provider;
 mod connectors;
 mod data_integrity;
+mod kafka;
 mod mcp;
 mod sdk;
 mod server;

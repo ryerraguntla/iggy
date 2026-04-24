@@ -102,6 +102,7 @@ pub fn params_from_args_and_metrics(
         TransportProtocol::Quic => BenchmarkTransport::Quic,
         TransportProtocol::Http => BenchmarkTransport::Http,
         TransportProtocol::WebSocket => BenchmarkTransport::WebSocket,
+        TransportProtocol::Kafka => unreachable!("Kafka is a server-side protocol, not a bench client transport"),
     };
     let server_address = args.server_address().to_string();
     let remark = args.remark();

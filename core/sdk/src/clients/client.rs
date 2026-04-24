@@ -95,6 +95,7 @@ impl IggyClient {
             TransportProtocol::WebSocket => Ok(IggyClient::new(ClientWrapper::WebSocket(
                 WebSocketClient::from_connection_string(connection_string)?,
             ))),
+            TransportProtocol::Kafka => Err(IggyError::InvalidCommand),
         }
     }
 

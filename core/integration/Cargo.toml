@@ -53,6 +53,7 @@ mongodb = { workspace = true }
 once_cell = { workspace = true }
 predicates = { workspace = true }
 rand = { workspace = true }
+rskafka = { workspace = true }
 rcgen = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 reqwest-middleware = { workspace = true }

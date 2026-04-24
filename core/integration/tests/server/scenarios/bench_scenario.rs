@@ -38,6 +38,7 @@ pub async fn run(harness: &TestHarness) {
             .websocket_addr()
             .expect("WebSocket address not available")
             .to_string(),
+        TransportProtocol::Kafka => unreachable!("Kafka is not a bench client transport"),
     };
     let data_size = IggyByteSize::from(8 * 1024 * 1024);
 

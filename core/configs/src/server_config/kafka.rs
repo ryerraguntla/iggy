@@ -41,6 +41,15 @@ pub struct KafkaConfig {
     /// All Kafka topics are mapped to topics inside this stream.
     pub kafka_stream: String,
 
+    /// When true (the default), every Kafka connection must authenticate via
+    /// SASL/PLAIN before issuing any data-plane request (Produce, Fetch, …).
+    ///
+    /// Set to false **only in development/testing** environments to allow
+    /// unauthenticated clients (e.g. rskafka 0.4 which lacks SASL support).
+    /// Anonymous connections are granted root-level access; this setting must
+    /// **never** be used in production.
+    pub require_sasl: bool,
+
     /// Low-level socket configuration for the Kafka listener.
     pub socket: KafkaSocketConfig,
 }

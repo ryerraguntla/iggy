@@ -108,6 +108,9 @@ impl ClientHandle {
             TransportProtocol::Quic => self.create_quic_client().await,
             TransportProtocol::Http => self.create_http_client().await,
             TransportProtocol::WebSocket => self.create_websocket_client().await,
+            TransportProtocol::Kafka => Err(TestBinaryError::InvalidState {
+                message: "Kafka is a server-side protocol, not a test client transport".into(),
+            }),
         }
     }
 

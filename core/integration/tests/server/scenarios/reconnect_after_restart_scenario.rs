@@ -196,6 +196,7 @@ fn create_client(harness: &TestHarness) -> IggyClient {
             .websocket_addr()
             .expect("WebSocket address not available"),
         TransportProtocol::Http => panic!("HTTP is stateless and does not support reconnect"),
+        TransportProtocol::Kafka => unreachable!("Kafka is not a test client transport"),
     };
 
     let protocol_prefix = match transport {
@@ -203,6 +204,7 @@ fn create_client(harness: &TestHarness) -> IggyClient {
         TransportProtocol::Quic => "iggy+quic",
         TransportProtocol::WebSocket => "iggy+ws",
         TransportProtocol::Http => unreachable!(),
+        TransportProtocol::Kafka => unreachable!("Kafka is not a test client transport"),
     };
 
     let connection_string = format!("{protocol_prefix}://iggy:iggy@{addr}?heartbeat_interval=5min");

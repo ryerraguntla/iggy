@@ -117,6 +117,9 @@ impl ClientBuilder {
             TransportProtocol::Http => self.create_http_client().await?,
             TransportProtocol::Quic => self.create_quic_client().await?,
             TransportProtocol::WebSocket => self.create_websocket_client().await?,
+            TransportProtocol::Kafka => return Err(TestBinaryError::InvalidState {
+                message: "Kafka is a server-side protocol, not a test client transport".into(),
+            }),
         };
 
         if let Some(ref login) = self.auto_login {
@@ -316,6 +319,7 @@ impl ClientBuilder {
                 .websocket_addr
                 .map(|a| a.to_string())
                 .unwrap_or_default(),
+            TransportProtocol::Kafka => String::new(),
         }
     }
 }

@@ -158,6 +158,9 @@ impl ClientProviderConfig {
                     },
                 }));
             }
+            TransportProtocol::Kafka => {
+                return Err(ClientError::InvalidTransport("kafka".to_string()));
+            }
             TransportProtocol::WebSocket => {
                 config.websocket = Some(Arc::new(WebSocketClientConfig {
                     server_address: args.websocket_server_address,
@@ -247,5 +250,6 @@ pub async fn get_raw_client(
             };
             Ok(ClientWrapper::WebSocket(client))
         }
+        TransportProtocol::Kafka => Err(ClientError::InvalidTransport("kafka".to_string())),
     }
 }

@@ -45,6 +45,7 @@ use async_channel::Receiver;
 use bytes::BytesMut;
 use futures::FutureExt;
 use iggy_common::SenderKind;
+use iggy_common::defaults::DEFAULT_ROOT_USERNAME;
 use std::rc::Rc;
 use tracing::{debug, warn};
 
@@ -55,6 +56,24 @@ pub async fn handle_kafka_connection(
     shard: &Rc<IggyShard>,
     stop_receiver: Receiver<()>,
 ) {
+    // Dev/test mode: skip SASL and grant root access automatically.
+    // require_sasl must never be false in production.
+    if !shard.config.kafka.require_sasl && !kafka_session.authenticated {
+        match shard.login_user_with_credentials(DEFAULT_ROOT_USERNAME, None, Some(&session)) {
+            Ok(user) => {
+                session.set_user_id(user.id);
+                kafka_session.authenticated = true;
+                debug!(
+                    "Kafka connection {} auto-authenticated as root (require_sasl=false)",
+                    session.client_id
+                );
+            }
+            Err(e) => {
+                warn!("Kafka auto-auth as root failed: {e}");
+            }
+        }
+    }
+
     loop {
         // ── Step 1: read the 4-byte frame length ────────────────────────────
         let len_buf = BytesMut::with_capacity(4);

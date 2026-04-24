@@ -293,6 +293,9 @@ impl TestHarness {
             TransportProtocol::Http => server.http_client(),
             TransportProtocol::Quic => server.quic_client(),
             TransportProtocol::WebSocket => server.websocket_client(),
+            TransportProtocol::Kafka => Err(TestBinaryError::InvalidState {
+                message: "Kafka is a server-side protocol, not a test client transport".into(),
+            }),
         }
     }
 
@@ -320,6 +323,9 @@ impl TestHarness {
             TransportProtocol::Http => server.http_client()?,
             TransportProtocol::Quic => server.quic_client()?,
             TransportProtocol::WebSocket => server.websocket_client()?,
+            TransportProtocol::Kafka => return Err(TestBinaryError::InvalidState {
+                message: "Kafka is a server-side protocol, not a test client transport".into(),
+            }),
         };
         builder.connect().await
     }
@@ -431,6 +437,7 @@ impl TestHarness {
                 TransportProtocol::Http => server.http_addr(),
                 TransportProtocol::Quic => server.quic_addr(),
                 TransportProtocol::WebSocket => server.websocket_addr(),
+                TransportProtocol::Kafka => None,
             };
 
             let Some(address) = address else {
@@ -465,6 +472,7 @@ impl TestHarness {
                 TransportProtocol::Http => server.http_addr(),
                 TransportProtocol::Quic => server.quic_addr(),
                 TransportProtocol::WebSocket => server.websocket_addr(),
+                TransportProtocol::Kafka => None,
             };
 
             if let Some(addr) = address {

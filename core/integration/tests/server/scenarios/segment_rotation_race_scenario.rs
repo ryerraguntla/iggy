@@ -148,6 +148,7 @@ async fn create_client_for_transport(
         TransportProtocol::Http => server.http_client().expect("HTTP not available"),
         TransportProtocol::Quic => server.quic_client().expect("QUIC not available"),
         TransportProtocol::WebSocket => server.websocket_client().expect("WebSocket not available"),
+        TransportProtocol::Kafka => unreachable!("Kafka is not a test client transport"),
     };
     builder
         .with_root_login()

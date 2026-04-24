@@ -70,6 +70,7 @@ impl IggyClientBuilder {
                     WebSocketClient::from_connection_string(connection_string)?,
                 ));
             }
+            TransportProtocol::Kafka => return Err(IggyError::InvalidCommand),
         }
 
         Ok(builder)

@@ -252,5 +252,6 @@ pub fn create_client_factory(args: &IggyBenchArgs) -> Arc<dyn ClientFactory> {
             username,
             password,
         }),
+        TransportProtocol::Kafka => unreachable!("Kafka is a server-side protocol, not a bench client transport"),
     }
 }

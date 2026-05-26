@@ -41,6 +41,7 @@ import java.io.File;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 /**
  * Async TCP client for Apache Iggy message streaming, built on Netty.
@@ -104,6 +105,9 @@ public class AsyncIggyTcpClient {
     private final Optional<Duration> acquireTimeout;
     private final Optional<Duration> requestTimeout;
     private final Optional<Integer> connectionPoolSize;
+    // TODO: RetryPolicy is accepted by the builder but not yet applied to request execution.
+    // When implemented, the retry engine should wrap AsyncTcpConnection.send() with retry logic
+    // using the configured policy (exponential backoff, fixed delay, or no-retry).
     private final Optional<RetryPolicy> retryPolicy;
     private final boolean enableTls;
     private final Optional<File> tlsCertificate;
@@ -208,7 +212,7 @@ public class AsyncIggyTcpClient {
      * @throws IggyNotConnectedException       if {@link #connect()} has not been called
      */
     public CompletableFuture<IdentityInfo> login() {
-        if (usersClient == null) {
+        if (connection == null || usersClient == null) {
             throw new IggyNotConnectedException();
         }
         if (username.isEmpty() || password.isEmpty()) {
@@ -224,7 +228,7 @@ public class AsyncIggyTcpClient {
      * @throws IggyNotConnectedException if the client is not connected
      */
     public UsersClient users() {
-        if (usersClient == null) {
+        if (connection == null || usersClient == null) {
             throw new IggyNotConnectedException();
         }
         return usersClient;
@@ -237,7 +241,7 @@ public class AsyncIggyTcpClient {
      * @throws IggyNotConnectedException if the client is not connected
      */
     public MessagesClient messages() {
-        if (messagesClient == null) {
+        if (connection == null || messagesClient == null) {
             throw new IggyNotConnectedException();
         }
         return messagesClient;
@@ -250,7 +254,7 @@ public class AsyncIggyTcpClient {
      * @throws IggyNotConnectedException if the client is not connected
      */
     public ConsumerGroupsClient consumerGroups() {
-        if (consumerGroupsClient == null) {
+        if (connection == null || consumerGroupsClient == null) {
             throw new IggyNotConnectedException();
         }
         return consumerGroupsClient;
@@ -263,7 +267,7 @@ public class AsyncIggyTcpClient {
      * @throws IggyNotConnectedException if the client is not connected
      */
     public StreamsClient streams() {
-        if (streamsClient == null) {
+        if (connection == null || streamsClient == null) {
             throw new IggyNotConnectedException();
         }
         return streamsClient;
@@ -276,7 +280,7 @@ public class AsyncIggyTcpClient {
      * @throws IggyNotConnectedException if the client is not connected
      */
     public TopicsClient topics() {
-        if (topicsClient == null) {
+        if (connection == null || topicsClient == null) {
             throw new IggyNotConnectedException();
         }
         return topicsClient;
@@ -289,7 +293,7 @@ public class AsyncIggyTcpClient {
      * @throws IggyNotConnectedException if the client is not connected
      */
     public SystemClient system() {
-        if (systemClient == null) {
+        if (connection == null || systemClient == null) {
             throw new IggyNotConnectedException();
         }
         return systemClient;
@@ -302,7 +306,7 @@ public class AsyncIggyTcpClient {
      * @throws IggyNotConnectedException if the client is not connected
      */
     public PersonalAccessTokensClient personalAccessTokens() {
-        if (personalAccessTokensClient == null) {
+        if (connection == null || personalAccessTokensClient == null) {
             throw new IggyNotConnectedException();
         }
         return personalAccessTokensClient;
@@ -315,7 +319,7 @@ public class AsyncIggyTcpClient {
      * @throws IggyNotConnectedException if the client is not connected
      */
     public PartitionsClient partitions() {
-        if (partitionsClient == null) {
+        if (connection == null || partitionsClient == null) {
             throw new IggyNotConnectedException();
         }
         return partitionsClient;
@@ -328,7 +332,7 @@ public class AsyncIggyTcpClient {
      * @throws IggyNotConnectedException if the client is not connected
      */
     public ConsumerOffsetsClient consumerOffsets() {
-        if (consumerOffsetsClient == null) {
+        if (connection == null || consumerOffsetsClient == null) {
             throw new IggyNotConnectedException();
         }
         return consumerOffsetsClient;
@@ -344,8 +348,29 @@ public class AsyncIggyTcpClient {
      */
     public CompletableFuture<Void> close() {
         if (connection != null) {
-            return connection.close();
+            AsyncTcpConnection closingConnection = connection;
+            return closingConnection.close().handle((ignored, throwable) -> {
+                clearClients();
+                if (throwable != null) {
+                    throw new CompletionException(throwable);
+                }
+                return null;
+            });
         }
+        clearClients();
         return CompletableFuture.completedFuture(null);
+    }
+
+    private void clearClients() {
+        connection = null;
+        messagesClient = null;
+        consumerGroupsClient = null;
+        consumerOffsetsClient = null;
+        streamsClient = null;
+        topicsClient = null;
+        usersClient = null;
+        systemClient = null;
+        personalAccessTokensClient = null;
+        partitionsClient = null;
     }
 }

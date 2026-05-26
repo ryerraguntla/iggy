@@ -19,6 +19,7 @@
 
 package org.apache.iggy.client.async;
 
+import org.apache.iggy.IntegrationTest;
 import org.apache.iggy.client.BaseIntegrationTest;
 import org.apache.iggy.client.async.tcp.AsyncIggyTcpClient;
 import org.apache.iggy.consumergroup.Consumer;
@@ -51,6 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * consumer offsets, personal access tokens, system) are covered by the blocking test suite
  * which exercises the same async code path via the blocking wrapper.
  */
+@IntegrationTest
 public class AsyncClientIntegrationTest extends BaseIntegrationTest {
 
     private static final Logger log = LoggerFactory.getLogger(AsyncClientIntegrationTest.class);

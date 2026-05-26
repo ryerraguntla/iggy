@@ -19,6 +19,7 @@
 
 package org.apache.iggy.client.async.tcp;
 
+import org.apache.iggy.IntegrationTest;
 import org.apache.iggy.client.BaseIntegrationTest;
 import org.apache.iggy.config.RetryPolicy;
 import org.apache.iggy.exception.IggyAuthenticationException;
@@ -42,6 +43,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * Integration tests for AsyncIggyTcpClient builder pattern.
  * Tests the builder functionality against a running Iggy server.
  */
+@IntegrationTest
 class AsyncIggyTcpClientBuilderTest extends BaseIntegrationTest {
 
     private static final String TEST_USERNAME = "iggy";

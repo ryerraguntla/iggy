@@ -53,8 +53,20 @@ dependencies {
     testImplementation(libs.testcontainers.junit)
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.bundles.testing)
+    testImplementation("org.awaitility:awaitility:4.2.2")
     testRuntimeOnly(libs.logback.classic)
     testRuntimeOnly(libs.netty.dns.macos) { artifact { classifier = "osx-aarch_64" } }
+}
+
+tasks.withType<Test> {
+    useJUnitPlatform {
+        excludeTags("integration")
+    }
+}
+
+tasks.register<Test>("integrationTest") {
+    useJUnitPlatform()
+    shouldRunAfter(tasks.test)
 }
 
 publishing {

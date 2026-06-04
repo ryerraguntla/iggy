@@ -21,12 +21,40 @@
 //! Translates a Kafka `Fetch` request into a call to `shard.poll_messages()`
 //! and re-encodes the result as a Kafka `RecordBatch`.
 //!
-//! ## TODO items for production readiness
-//! - Encode polled `IggyMessagesBatchSet` as valid Kafka RecordBatch bytes,
-//!   including the 49-byte header and per-record variable-length encoding.
-//! - Support `max_wait_ms` / `min_bytes` long-polling semantics.
-//! - Handle compression attributes on outbound batches.
-//! - Compute correct CRC32C on each RecordBatch.
+//! ## CURRENT STATE: stub - Kafka consumers receive NO messages
+//!
+//! `poll_messages` is called and returns `IggyMessagesBatchSet`, but the
+//! RecordBatch serialization step is not implemented.  The handler returns
+//! an empty records field for every partition.  Kafka consumers will see an
+//! empty poll on every request regardless of what was produced.
+//!
+//! ## What needs to be implemented
+//!
+//! 1. For each `IggyMessage` in the batch, encode it as a Kafka Record:
+//!    - `length`: zigzag-encoded signed varint (covers everything after this field)
+//!    - `attributes`: i8 (0 for no timestamp type)
+//!    - `timestamp_delta`: signed varint (relative to batch base_timestamp)
+//!    - `offset_delta`: signed varint (relative to base_offset)
+//!    - `key_length`: signed varint (-1 = null key)
+//!    - `key`: bytes
+//!    - `value_length`: signed varint
+//!    - `value`: bytes (IggyMessage payload)
+//!    - `headers_count`: unsigned varint + header key/value pairs
+//!
+//! 2. Wrap all encoded records in a RecordBatch header (61 bytes):
+//!    - `base_offset` i64, `batch_length` i32, `partition_leader_epoch` i32
+//!    - `magic` i8 = 2, `crc` u32 (CRC32C over everything after crc field)
+//!    - `attributes` i16, `last_offset_delta` i32
+//!    - `base_timestamp` i64, `max_timestamp` i64
+//!    - `producer_id` i64 = -1, `producer_epoch` i16 = -1
+//!    - `base_sequence` i32 = -1, `records_count` i32
+//!
+//! 3. Compute CRC32C using the `crc32c` crate over bytes from `attributes` onward.
+//!
+//! 4. Support `max_wait_ms` / `min_bytes` long-polling semantics.
+//!
+//! See `feat/kafka_protocol_support_4_iggy` branch `handlers/produce.rs::parse_record_batch`
+//! for the inverse (decode) path as a reference for the wire format.
 
 use crate::kafka::error::iggy_to_kafka_error;
 use crate::kafka::protocol::types::{

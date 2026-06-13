@@ -458,3 +458,83 @@ pub fn decode_create_topics_request(version: i16, body: Bytes) -> Result<CreateT
         validate_only,
     })
 }
+
+/// How the client scoped a Metadata request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetadataTopicFilter {
+    /// v0 empty array, or v1+ null array — metadata for all topics.
+    All,
+    /// Explicit topic names (v1+ empty array yields an empty list).
+    Named(Vec<String>),
+}
+
+/// Decode topic names from a Metadata request body (API key 3).
+///
+/// # Errors
+///
+/// Returns an error when the body is truncated or malformed.
+pub fn decode_metadata_topic_filter(version: i16, body: Bytes) -> Result<MetadataTopicFilter> {
+    let mut d = Decoder::new(body);
+    let flexible = version >= 9;
+
+    let filter = if flexible {
+        read_metadata_topics_flexible(&mut d, version)?
+    } else {
+        read_metadata_topics_legacy(&mut d, version)?
+    };
+
+    if version >= 4 {
+        d.read_bool()?; // allow_auto_topic_creation
+    }
+    if (8..=10).contains(&version) {
+        d.read_bool()?; // include_cluster_authorized_operations
+    }
+    if version >= 8 {
+        d.read_bool()?; // include_topic_authorized_operations
+    }
+
+    Ok(filter)
+}
+
+fn read_metadata_topics_legacy(d: &mut Decoder, version: i16) -> Result<MetadataTopicFilter> {
+    let n = d.read_i32()?;
+    if version >= 1 && n < 0 {
+        return Ok(MetadataTopicFilter::All);
+    }
+    if n == 0 {
+        return Ok(if version == 0 {
+            MetadataTopicFilter::All
+        } else {
+            MetadataTopicFilter::Named(Vec::new())
+        });
+    }
+    let count = usize::try_from(n).map_err(|_| KafkaProtocolError::InvalidArrayLength(n))?;
+    let mut names = Vec::with_capacity(count);
+    for _ in 0..count {
+        if let Some(name) = d.read_nullable_string()? {
+            names.push(name);
+        }
+    }
+    Ok(MetadataTopicFilter::Named(names))
+}
+
+fn read_metadata_topics_flexible(d: &mut Decoder, version: i16) -> Result<MetadataTopicFilter> {
+    let n = d.read_varint()?;
+    if n == 0 {
+        return Ok(MetadataTopicFilter::All);
+    }
+    let count = usize::try_from(n - 1)
+        .map_err(|_| KafkaProtocolError::InvalidArrayLength(i32::try_from(n).unwrap_or(i32::MAX)))?;
+    let mut names = Vec::with_capacity(count);
+    for _ in 0..count {
+        if version >= 10 {
+            // Metadata v10+ topic_id UUID — not reachable while max supported version is 9.
+            d.read_bytes(16)?;
+        }
+        if let Some(name) = d.read_compact_nullable_string()? {
+            names.push(name);
+        }
+        d.read_tagged_fields()?;
+    }
+    Ok(MetadataTopicFilter::Named(names))
+}

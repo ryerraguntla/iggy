@@ -6,7 +6,15 @@ Regression tests live under [`tests/`](../tests/). Run from the workspace root:
 cargo test -p iggy_gateway_kafka
 ```
 
-**Current count:** 103 tests across 12 suites (as of #3421 foundation).
+**Current count:** 158 tests across 19 suites (Phase 1A + 1B).
+
+**Negative / non-happy-path coverage:** ~62 automated tests (~39% of suite). See [Negative-path catalog](#negative-path-catalog) below.
+
+Bridge integration tests spawn `iggy-server` — build it first:
+
+```bash
+cargo build -p server --bin iggy-server
+```
 
 ## Prerequisites
 
@@ -38,7 +46,11 @@ Fixtures are gitignored under `tools/kafka-tool/kafka_messages/`. Tests that nee
 | [`handler_regression_tests.rs`](../tests/handler_regression_tests.rs) | Every scoped key×version via `handle_request`, stub error codes | 5 | Partial |
 | [`server_integration_tests.rs`](../tests/server_integration_tests.rs) | `read_frame` / `write_frame` unit-level I/O | 4 | No |
 | [`server_e2e_tests.rs`](../tests/server_e2e_tests.rs) | Full `KafkaServer` TCP round-trips | 8 | Partial |
-| [`common/mod.rs`](../tests/common/mod.rs) | Shared helpers (not a test binary) | — | — |
+| [`bridge_unit_tests.rs`](../tests/bridge_unit_tests.rs) | Metadata decode, bridge response encoders (happy path) | 7 | No |
+| [`bridge_negative_unit_tests.rs`](../tests/bridge_negative_unit_tests.rs) | Bridge encoders, mapping, decode failures, error propagation | 16 | No |
+| [`bridge_integration_tests.rs`](../tests/bridge_integration_tests.rs) | Iggy harness + Kafka wire with live bridge (happy path) | 4 | **iggy-server** |
+| [`bridge_negative_integration_tests.rs`](../tests/bridge_negative_integration_tests.rs) | Iggy bridge wire errors (unknown topic, invalid partitions, truncated bodies) | 18 | **iggy-server** |
+| [`common/`](../tests/common/) | Shared helpers via `#[path]` (`wire.rs`, `tcp.rs`, `server.rs`) | — | — |
 
 ---
 
@@ -132,6 +144,55 @@ Fixtures are gitignored under `tools/kafka-tool/kafka_messages/`. Tests that nee
 
 ---
 
+## Negative-path catalog
+
+Tests that assert error codes, decode failures, rejected frames, or other non-happy-path behavior.
+
+### Phase 1A (protocol / TCP) — ~28 tests
+
+| Area | File | Count | Examples |
+|------|------|------:|----------|
+| Adversarial decode | `decode_safety_tests.rs` | 6 | Negative array length, oversized collections, malformed varint |
+| Version firewall | `version_firewall_tests.rs` | 14 | Out-of-range versions, unsupported API keys, corrupt Produce/Fetch bodies |
+| Handler stubs | `api_handler_tests.rs` | 3 | Unsupported version, unknown API key |
+| TCP / frames | `server_e2e_tests.rs` | 3 | Unsupported key without disconnect, negative/oversized frame length |
+| Frame I/O | `server_integration_tests.rs` | 1 | Invalid frame lengths |
+| Metadata stub | `metadata_regression_tests.rs` | 1 | Three unknown topics (`metadata_v0_three_topics_each_unknown`) |
+
+### Phase 1B (bridge) — ~34 tests
+
+| Area | File | Count | Examples |
+|------|------|------:|----------|
+| Unit | `bridge_negative_unit_tests.rs` | 16 | `INVALID_PARTITIONS` CreateTopics encoder, produce/fetch/list error propagation, truncated decode, empty topic name |
+| Integration | `bridge_negative_integration_tests.rs` | 18 | Unknown topic Metadata/Fetch/Produce/ListOffsets, `num_partitions=0`, bad RF, transactional produce, null records, bad timestamp |
+| Integration (legacy) | `bridge_integration_tests.rs` | 1 | `bridge_kafka_wire_metadata_unknown_topic` |
+
+### Bridge negative integration matrix
+
+| API key | Scenario | Test name | Expected code |
+|---------|----------|-----------|---------------|
+| Metadata (3) | Unknown topic | `bridge_metadata_unknown_topic_returns_error_3` | 3 |
+| Metadata (3) | Known vs unknown sequential | `bridge_metadata_known_vs_unknown_topics_sequential` | 0 / 3 |
+| CreateTopics (19) | `num_partitions=0` | `bridge_create_topics_zero_partitions_returns_invalid_partitions` | 37 |
+| CreateTopics (19) | `num_partitions=-1` | `bridge_create_topics_minus_one_partitions_succeeds` | 0 |
+| CreateTopics (19) | `replication_factor=3` | `bridge_create_topics_invalid_replication_factor_aborts_request` | 38 |
+| CreateTopics (19) | Zero partitions no-op | `bridge_create_topics_zero_partitions_does_not_create_topic` | (no Iggy topic) |
+| Produce (0) | Null records | `bridge_produce_null_records_returns_invalid_request` | 42 |
+| Produce (0) | Transactional ID set | `bridge_produce_transactional_id_returns_invalid_request` | 42 |
+| Produce (0) | Truncated body | `bridge_produce_truncated_body_returns_invalid_request` | 42 |
+| Produce (0) | Unknown topic | `bridge_produce_unknown_topic_returns_unknown_topic_or_partition` | 3 |
+| Fetch (1) | Unknown topic | `bridge_fetch_unknown_topic_returns_error_3` | 3 |
+| Fetch (1) | Partition `-1` | `bridge_fetch_negative_partition_returns_error_3` | 3 |
+| Fetch (1) | Truncated body | `bridge_fetch_truncated_body_returns_invalid_request` | 42 |
+| Fetch (1) | Empty topic | `bridge_fetch_empty_topic_returns_no_records` | 0, null records |
+| ListOffsets (2) | Unknown topic | `bridge_list_offsets_unknown_topic_returns_error_3` | 3 |
+| ListOffsets (2) | Timestamp `-3` | `bridge_list_offsets_bad_timestamp_sentinel_returns_invalid_request` | 42 |
+| ListOffsets (2) | Future timestamp | `bridge_list_offsets_future_timestamp_no_match_returns_invalid_request` | 42 |
+| ListOffsets (2) | Partition `-1` | `bridge_list_offsets_negative_partition_returns_error_3` | 3 |
+| ListOffsets (2) | Earliest on empty | `bridge_list_offsets_earliest_on_empty_partition_returns_zero` | 0, offset 0 |
+
+---
+
 ## CI recommendation
 
 ```bash
@@ -153,5 +214,6 @@ cargo clippy -p iggy_gateway_kafka -- -D warnings
 
 1. **New API key or version range** — update `SUPPORTED_RANGES` in `api.rs`, `SCOPE.md`, and add rows to the coverage matrix above.
 2. **New decode path** — add fixture via `kafka-message-gen`, extend `decode_validation_tests.rs`.
-3. **New error path** — add to `version_firewall_tests.rs` or `decode_safety_tests.rs`.
-4. **New TCP behavior** — add to `server_e2e_tests.rs` using helpers in `tests/common/mod.rs`.
+3. **New error path** — add to `version_firewall_tests.rs`, `decode_safety_tests.rs`, or bridge `bridge_negative_*_tests.rs`.
+4. **New TCP behavior** — add to `server_e2e_tests.rs` using helpers in `tests/common/tcp.rs`.
+5. **New bridge error path** — add wire builder/parser in `tests/common/wire.rs`; integration test in `bridge_negative_integration_tests.rs`; encoder/mapping unit test in `bridge_negative_unit_tests.rs`.

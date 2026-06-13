@@ -19,13 +19,16 @@
 
 #![allow(clippy::pedantic)]
 
-use crate::protocol::api::{ERROR_INVALID_PARTITIONS, ERROR_NONE};
+use crate::bridge::mapping::KAFKA_PARTITIONS_USE_DEFAULT;
+use crate::protocol::api::{
+    ERROR_INVALID_PARTITIONS, ERROR_NONE, ERROR_UNKNOWN_TOPIC_OR_PARTITION,
+};
 use crate::protocol::codec::Encoder;
 use crate::protocol::requests::{
     CreateTopicsRequest, FetchRequest, ListOffsetsRequest, ProducePartitionData, ProduceRequest,
     ProduceTopicData,
 };
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 
 /// Well-formed Produce response with a single placeholder topic/partition.
 pub fn encode_produce_error_response(version: i16, error_code: i16) -> Bytes {
@@ -333,7 +336,7 @@ fn encode_create_topics_response_inner(
 
         let error_code = if topic_error != ERROR_NONE {
             topic_error
-        } else if topic.num_partitions <= 0 {
+        } else if topic.num_partitions <= 0 && topic.num_partitions != KAFKA_PARTITIONS_USE_DEFAULT {
             ERROR_INVALID_PARTITIONS
         } else {
             ERROR_NONE
@@ -364,4 +367,395 @@ fn encode_create_topics_response_inner(
     }
 
     e.freeze()
+}
+
+// ── Bridge-backed responses (Phase 1B) ───────────────────────────────────────
+
+/// Per-partition Produce outcome from the Iggy bridge.
+#[derive(Debug, Clone, Copy)]
+pub struct ProducePartitionOutcome {
+    pub partition: i32,
+    pub error_code: i16,
+    pub base_offset: i64,
+}
+
+/// Per-partition Fetch outcome from the Iggy bridge.
+#[derive(Debug, Clone)]
+pub struct FetchPartitionOutcome {
+    pub partition: i32,
+    pub error_code: i16,
+    pub high_watermark: i64,
+    pub log_start_offset: i64,
+    pub records: Option<Bytes>,
+}
+
+/// Per-partition ListOffsets outcome from the Iggy bridge.
+#[derive(Debug, Clone, Copy)]
+pub struct ListOffsetsPartitionOutcome {
+    pub partition: i32,
+    pub error_code: i16,
+    pub offset: i64,
+}
+
+/// Metadata topic entry backed by Iggy state.
+#[derive(Debug, Clone)]
+pub struct MetadataTopicOutcome {
+    pub name: String,
+    pub error_code: i16,
+    pub partitions_count: u32,
+}
+
+/// Encode a Produce response for one or more topics.
+pub fn encode_produce_response_from_topic_outcomes(
+    version: i16,
+    topics: &[(String, Vec<ProducePartitionOutcome>)],
+) -> Bytes {
+    let produce_topics: Vec<ProduceTopicData> = topics
+        .iter()
+        .map(|(name, outcomes)| ProduceTopicData {
+            topic: name.clone(),
+            partitions: outcomes
+                .iter()
+                .map(|o| ProducePartitionData {
+                    partition: o.partition,
+                    records: None,
+                })
+                .collect(),
+        })
+        .collect();
+    let flat_outcomes: Vec<ProducePartitionOutcome> =
+        topics.iter().flat_map(|(_, o)| o.iter().copied()).collect();
+    encode_produce_response_with_offsets(version, &produce_topics, &flat_outcomes)
+}
+
+fn encode_produce_response_with_offsets(
+    version: i16,
+    topics: &[ProduceTopicData],
+    outcomes: &[ProducePartitionOutcome],
+) -> Bytes {
+    let flexible = version >= 9;
+    let mut e = Encoder::with_capacity(512);
+    let mut outcome_idx = 0;
+
+    if flexible {
+        e.write_varint((topics.len() + 1) as u64);
+    } else {
+        e.write_i32(i32::try_from(topics.len()).expect("topic count bounded"));
+    }
+
+    for topic in topics {
+        if flexible {
+            e.write_compact_nullable_string(Some(&topic.topic));
+        } else {
+            let _ = e.write_nullable_string(Some(&topic.topic));
+        }
+
+        if flexible {
+            e.write_varint((topic.partitions.len() + 1) as u64);
+        } else {
+            e.write_i32(i32::try_from(topic.partitions.len()).expect("partition count bounded"));
+        }
+
+        for p in &topic.partitions {
+            let outcome = outcomes.get(outcome_idx).copied().unwrap_or(ProducePartitionOutcome {
+                partition: p.partition,
+                error_code: ERROR_NONE,
+                base_offset: 0,
+            });
+            outcome_idx += 1;
+
+            e.write_i32(p.partition);
+            e.write_i16(outcome.error_code);
+            e.write_i64(outcome.base_offset);
+            if version >= 2 {
+                e.write_i64(-1);
+            }
+            if version >= 5 {
+                e.write_i64(0);
+            }
+            if version >= 8 {
+                if flexible {
+                    e.write_varint(1);
+                    e.write_compact_nullable_string(None);
+                } else {
+                    e.write_i32(0);
+                    let _ = e.write_nullable_string(None);
+                }
+            }
+            if flexible {
+                e.write_empty_tagged_fields();
+            }
+        }
+
+        if flexible {
+            e.write_empty_tagged_fields();
+        }
+    }
+
+    if version >= 1 {
+        e.write_i32(0);
+    }
+    if flexible {
+        e.write_empty_tagged_fields();
+    }
+
+    e.freeze()
+}
+
+/// Encode a Fetch response for one or more topics.
+pub fn encode_fetch_response_from_topic_outcomes(
+    version: i16,
+    topics: &[(String, Vec<FetchPartitionOutcome>)],
+) -> Bytes {
+    let flexible = version >= 12;
+    let mut e = Encoder::with_capacity(1024);
+
+    if version >= 1 {
+        e.write_i32(0);
+    }
+    if version >= 7 {
+        e.write_i16(ERROR_NONE);
+        e.write_i32(0);
+    }
+
+    if flexible {
+        e.write_varint((topics.len() + 1) as u64);
+    } else {
+        e.write_i32(i32::try_from(topics.len()).unwrap_or(i32::MAX));
+    }
+
+    for (topic, outcomes) in topics {
+        if flexible {
+            e.write_compact_nullable_string(Some(topic));
+        } else {
+            let _ = e.write_nullable_string(Some(topic));
+        }
+
+        if flexible {
+            e.write_varint((outcomes.len() + 1) as u64);
+        } else {
+            e.write_i32(i32::try_from(outcomes.len()).unwrap_or(i32::MAX));
+        }
+
+        for outcome in outcomes {
+            e.write_i32(outcome.partition);
+            e.write_i16(outcome.error_code);
+            e.write_i64(outcome.high_watermark);
+            if version >= 4 {
+                e.write_i64(outcome.high_watermark);
+            }
+            if version >= 5 {
+                e.write_i64(outcome.log_start_offset);
+            }
+            if version >= 4 {
+                if flexible {
+                    e.write_varint(1);
+                } else {
+                    e.write_i32(0);
+                }
+            }
+            if version >= 11 {
+                e.write_i32(-1);
+            }
+            if flexible {
+                e.write_compact_nullable_bytes(outcome.records.as_deref());
+            } else {
+                let _ = e.write_nullable_bytes(outcome.records.as_deref());
+            }
+            if flexible {
+                e.write_empty_tagged_fields();
+            }
+        }
+
+        if flexible {
+            e.write_empty_tagged_fields();
+        }
+    }
+
+    if flexible {
+        e.write_empty_tagged_fields();
+    }
+
+    e.freeze()
+}
+
+/// Encode a ListOffsets response for one or more topics.
+pub fn encode_list_offsets_response_from_topic_outcomes(
+    version: i16,
+    topics: &[(String, Vec<ListOffsetsPartitionOutcome>)],
+) -> Bytes {
+    let flexible = version >= 6;
+    let mut e = Encoder::with_capacity(256);
+
+    if version >= 2 {
+        e.write_i32(0);
+    }
+
+    if flexible {
+        e.write_varint((topics.len() + 1) as u64);
+    } else {
+        e.write_i32(i32::try_from(topics.len()).unwrap_or(i32::MAX));
+    }
+
+    for (topic, outcomes) in topics {
+        if flexible {
+            e.write_compact_nullable_string(Some(topic));
+            e.write_varint((outcomes.len() + 1) as u64);
+        } else {
+            let _ = e.write_nullable_string(Some(topic));
+            e.write_i32(i32::try_from(outcomes.len()).unwrap_or(i32::MAX));
+        }
+
+        for outcome in outcomes {
+            e.write_i32(outcome.partition);
+            e.write_i16(outcome.error_code);
+            if version >= 1 {
+                e.write_i64(-1);
+            }
+            e.write_i64(outcome.offset);
+            if version >= 4 {
+                e.write_i32(-1);
+            }
+            if flexible {
+                e.write_empty_tagged_fields();
+            }
+        }
+
+        if flexible {
+            e.write_empty_tagged_fields();
+        }
+    }
+
+    if flexible {
+        e.write_empty_tagged_fields();
+    }
+
+    e.freeze()
+}
+
+/// Encode Metadata response with topic topology from Iggy.
+pub fn encode_metadata_response_from_topics(
+    api_version: i16,
+    broker: &crate::protocol::api::BrokerAdvertise,
+    topics: &[MetadataTopicOutcome],
+) -> Bytes {
+    const AUTHORIZED_OPS_UNKNOWN: i32 = i32::MIN;
+    let flexible = api_version >= 9;
+    let mut e = Encoder::with_capacity(512);
+
+    if api_version >= 3 {
+        e.write_i32(0);
+    }
+
+    if flexible {
+        e.write_varint(2);
+        e.write_i32(1);
+        e.write_compact_nullable_string(Some(&broker.host));
+        e.write_i32(broker.port);
+        e.write_compact_nullable_string(None);
+        e.write_empty_tagged_fields();
+
+        e.write_compact_nullable_string(None);
+        e.write_i32(1);
+
+        e.write_varint((topics.len() + 1) as u64);
+        for topic in topics {
+            e.write_i16(topic.error_code);
+            e.write_compact_nullable_string(Some(&topic.name));
+            e.write_bool(false);
+            if topic.error_code == ERROR_NONE {
+                e.write_varint((topic.partitions_count as u64) + 1);
+                for p in 0..topic.partitions_count {
+                    e.write_i32(i32::try_from(p).expect("partition index"));
+                    e.write_i32(1);
+                    e.write_i32(0);
+                    e.write_i32(0);
+                    e.write_i32(0);
+                    e.write_i32(0);
+                    e.write_empty_tagged_fields();
+                }
+            } else {
+                e.write_varint(1);
+            }
+            if api_version >= 8 {
+                e.write_i32(AUTHORIZED_OPS_UNKNOWN);
+            }
+            e.write_empty_tagged_fields();
+        }
+        if api_version >= 8 {
+            e.write_i32(AUTHORIZED_OPS_UNKNOWN);
+        }
+        e.write_empty_tagged_fields();
+    } else {
+        e.write_i32(1);
+        e.write_i32(1);
+        let _ = e.write_nullable_string(Some(&broker.host));
+        e.write_i32(broker.port);
+        if api_version >= 1 {
+            let _ = e.write_nullable_string(None);
+        }
+        if api_version >= 2 {
+            let _ = e.write_nullable_string(None);
+        }
+        if api_version >= 1 {
+            e.write_i32(1);
+        }
+
+        e.write_i32(i32::try_from(topics.len()).expect("topic count bounded"));
+        for topic in topics {
+            e.write_i16(topic.error_code);
+            let _ = e.write_nullable_string(Some(&topic.name));
+            if api_version >= 1 {
+                e.write_bool(false);
+            }
+            if topic.error_code == ERROR_NONE {
+                e.write_i32(i32::try_from(topic.partitions_count).expect("partition count"));
+                for p in 0..topic.partitions_count {
+                    e.write_i32(i32::try_from(p).expect("partition index"));
+                    e.write_i32(1);
+                    e.write_i32(0);
+                    e.write_i32(0);
+                    e.write_i32(0);
+                    e.write_i32(0);
+                }
+            } else {
+                e.write_i32(0);
+            }
+            if api_version >= 8 {
+                e.write_i32(AUTHORIZED_OPS_UNKNOWN);
+            }
+        }
+        if api_version >= 8 {
+            e.write_i32(AUTHORIZED_OPS_UNKNOWN);
+        }
+    }
+
+    e.freeze()
+}
+
+/// Build a single unknown-topic metadata outcome (stub compatibility).
+#[must_use]
+pub fn metadata_unknown_topic(name: &str) -> MetadataTopicOutcome {
+    MetadataTopicOutcome {
+        name: name.to_string(),
+        error_code: ERROR_UNKNOWN_TOPIC_OR_PARTITION,
+        partitions_count: 0,
+    }
+}
+
+/// Concatenate opaque record payloads for a Fetch `records` field.
+#[must_use]
+pub fn concat_record_batches(payloads: &[Bytes]) -> Option<Bytes> {
+    if payloads.is_empty() {
+        return None;
+    }
+    if payloads.len() == 1 {
+        return Some(payloads[0].clone());
+    }
+    let capacity = payloads.iter().map(Bytes::len).sum();
+    let mut buf = BytesMut::with_capacity(capacity);
+    for p in payloads {
+        buf.put_slice(p);
+    }
+    Some(buf.freeze())
 }

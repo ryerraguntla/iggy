@@ -15,16 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Kafka wire protocol gateway for Apache Iggy.
+//! Async bridge between Kafka protocol handlers and the Iggy message broker.
 
-pub mod bridge;
-pub mod error;
-pub mod handler;
-pub mod protocol;
-pub mod server;
+pub mod config;
+pub mod iggy_bridge;
+pub mod mapping;
 
-pub use bridge::{
-    FetchPartitionResult, FetchedMessage, IggyBridge, IggyBridgeConfig, ProduceAck, TopicMetadata,
+pub use config::IggyBridgeConfig;
+pub use iggy_bridge::{
+    FetchPartitionResult, FetchedMessage, IggyBridge, ProduceAck, TopicMetadata,
 };
-pub use handler::RequestHandler;
-pub use server::{KafkaServer, ServerConfig};

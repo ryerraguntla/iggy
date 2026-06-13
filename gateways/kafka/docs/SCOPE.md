@@ -1,8 +1,21 @@
 # Kafka gateway scope — [apache/iggy#3421](https://github.com/apache/iggy/issues/3421)
 
-## Issue #3421 — in scope (this iteration)
+## Phase 1A — #3421 foundation (done)
 
-Foundation layer only: a TCP listener on the Kafka wire port that decodes requests, validates scoped API keys and versions, validates request wire formats, and returns stub responses. **No Iggy backend integration.**
+TCP listener on the Kafka wire port that decodes requests, validates scoped API keys and versions, validates request wire formats, and returns stub responses when `KAFKA_IGGY_BRIDGE=false`.
+
+## Phase 1B — Iggy bridge (this iteration)
+
+Implements [Discussion #3253](https://github.com/apache/iggy/discussions/3253) Phase 1 producer/fetch path: Kafka clients can produce and consume via Iggy **without consumer groups**.
+
+| Deliverable | Status | Location |
+|-------------|--------|----------|
+| `IggyBridge` — connect, `ensure_stream_and_topic`, produce, fetch, offsets | Done | `src/bridge/` |
+| Wire handlers for Produce, Fetch, ListOffsets, CreateTopics, Metadata | Done | `src/handler.rs` |
+| Partition mapping (`-1` → balanced, else `partition_id`) | Done | `src/bridge/mapping.rs` |
+| Bridge mapping docs | Done | [`BRIDGE_MAPPING.md`](BRIDGE_MAPPING.md) |
+| Docker Compose (Iggy + gateway) | Done | [`../docker-compose.yml`](../docker-compose.yml) |
+| Unit + integration tests | Done | `tests/bridge_*_tests.rs` |
 
 | Deliverable | Status | Location |
 | ------------- | -------- | ---------- |
@@ -77,7 +90,7 @@ Full reference for future phases: [`kafka_api_keys_reference.md`](kafka_api_keys
 | ------- | ------- | ------------- |
 | **1 — Wire framing** | In scope | `server.rs`, `codec.rs`, `header.rs` — keep custom, zero-copy frame I/O |
 | **2 — Request/response codecs** | Partial | Custom minimal-parse codecs for 6 hot-path keys; stub responses only |
-| **3 — Iggy bridge** | Out of scope | Produce/Fetch → Iggy SDK; deferred to a follow-on issue |
+| **3 — Iggy bridge** | Phase 1B | `src/bridge/`, `src/handler.rs` — Produce/Fetch/ListOffsets/CreateTopics/Metadata |
 
 ---
 
@@ -85,15 +98,11 @@ Full reference for future phases: [`kafka_api_keys_reference.md`](kafka_api_keys
 
 Items from the [hybrid architecture review](https://github.com/apache/iggy/discussions/3252) and maintainer feedback. **Not part of #3421.**
 
-### Phase 2 — Iggy bridge (new issue)
+### Phase 2 — Consumer groups (next)
 
-- [ ] Add `bridge/` module (`iggy_bridge`): Produce → `send_messages`, Fetch → `poll_messages`
-- [ ] Document partition mapping in `docs/BRIDGE_MAPPING.md`:
-  - Iggy partitions are **0-based** (same as Kafka) — direct `partition_id` mapping, no offset conversion
-  - Iggy **consumer groups exist** — map Kafka group APIs to Iggy consumer group APIs
-  - Use `Partitioning::balanced()` only when Kafka sends `partition == -1`; otherwise use request partition ID
-- [ ] Idempotent `ensure_stream_and_topic()` (create-if-not-exists)
-- [ ] Real Metadata topology (brokers, partitions, leaders) backed by Iggy state
+- [ ] OffsetCommit (8), OffsetFetch (9), FindCoordinator (10), JoinGroup, Heartbeat, etc.
+- [ ] Map Kafka consumer groups to Iggy consumer group APIs
+- [ ] Offset persistence design (Iggy-backed vs external store)
 
 ### Phase 2 — Selective `kafka-protocol` crate (feature-gated)
 

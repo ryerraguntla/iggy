@@ -19,8 +19,12 @@ use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::broadcast;
 
+use std::sync::Arc;
+
+use tracing::warn;
+
 use iggy_gateway_kafka::server::init_tracing;
-use iggy_gateway_kafka::{KafkaServer, ServerConfig};
+use iggy_gateway_kafka::{IggyBridge, IggyBridgeConfig, KafkaServer, ServerConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,7 +47,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(&config.bind_addr)
         .await
         .map_err(|e| format!("failed to bind {}: {e}", config.bind_addr))?;
-    let server = KafkaServer::new(config);
+    let bridge_enabled = match std::env::var("KAFKA_IGGY_BRIDGE") {
+        Ok(v) if v == "0" || v.eq_ignore_ascii_case("false") => false,
+        Ok(v) if v == "1" || v.eq_ignore_ascii_case("true") => true,
+        Ok(v) => {
+            warn!(
+                env = %v,
+                "unrecognized KAFKA_IGGY_BRIDGE value; bridge enabled (use 0/false or 1/true)"
+            );
+            true
+        }
+        Err(_) => true,
+    };
+    let server = if bridge_enabled {
+        let iggy_config = IggyBridgeConfig::from_env();
+        let bridge = Arc::new(IggyBridge::connect(&iggy_config).await?);
+        KafkaServer::with_bridge(config, bridge)
+    } else {
+        KafkaServer::new(config)
+    };
 
     let (tx, rx) = broadcast::channel(1);
     let mut server_task = tokio::spawn(async move { server.run(listener, rx).await });

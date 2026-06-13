@@ -18,7 +18,7 @@
 [package]
 name = "iggy-gateway-kafka"
 version = "0.1.0"
-description = "Kafka wire protocol gateway foundation for Apache Iggy"
+description = "Kafka wire protocol gateway for Apache Iggy"
 edition = "2024"
 license = "Apache-2.0"
 keywords = ["iggy", "kafka", "gateway", "streaming"]
@@ -34,6 +34,7 @@ path = "src/main.rs"
 
 [dependencies]
 bytes = { workspace = true }
+iggy = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = [
     "rt-multi-thread",
@@ -49,6 +50,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+iggy_common = { workspace = true }
+integration = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
 
 [lints.clippy]

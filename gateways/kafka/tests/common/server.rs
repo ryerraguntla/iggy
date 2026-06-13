@@ -19,13 +19,14 @@
 #![allow(dead_code)]
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::broadcast;
 
-use iggy_gateway_kafka::{KafkaServer, ServerConfig};
+use iggy_gateway_kafka::{IggyBridge, KafkaServer, ServerConfig};
 
-/// Bind an ephemeral port, start `KafkaServer`, return address + shutdown sender.
+/// Bind an ephemeral port, start stub `KafkaServer`, return address + shutdown sender.
 pub async fn spawn_test_server() -> (SocketAddr, broadcast::Sender<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -46,5 +47,33 @@ pub async fn spawn_test_server() -> (SocketAddr, broadcast::Sender<()>) {
         let _ = server.run(listener, shutdown_rx).await;
     });
 
+    (addr, shutdown_tx)
+}
+
+/// Start `KafkaServer` wired to an existing Iggy bridge instance.
+pub async fn spawn_test_server_with_bridge(
+    bridge: Arc<IggyBridge>,
+) -> (SocketAddr, broadcast::Sender<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+    drop(listener);
+
+    let config = ServerConfig {
+        bind_addr: addr.to_string(),
+        advertised_host: None,
+        advertised_port: None,
+        max_frame_size: 8 * 1024 * 1024,
+        read_timeout: Duration::from_secs(30),
+        write_timeout: Duration::from_secs(30),
+    };
+    let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+    let server = KafkaServer::with_bridge(config, bridge);
+    tokio::spawn(async move {
+        let _ = server.run(shutdown_rx).await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
     (addr, shutdown_tx)
 }

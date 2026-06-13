@@ -1,8 +1,8 @@
 # Kafka gateway — manual testing procedure
 
-Manual validation for [apache/iggy#3421](https://github.com/apache/iggy/issues/3421) foundation: TCP listener, wire decode, version firewall, stub responses. **No Iggy backend** — success means correct Kafka wire behavior, not message persistence.
+Manual validation for [apache/iggy#3421](https://github.com/apache/iggy/issues/3421) and [Discussion #3253](https://github.com/apache/iggy/discussions/3253) Phase 1B: wire protocol plus Iggy-backed produce/fetch.
 
-See also: [SCOPE.md](SCOPE.md) (supported API keys), [TEST_SUITE.md](TEST_SUITE.md) (automated coverage).
+See also: [SCOPE.md](SCOPE.md), [BRIDGE_MAPPING.md](BRIDGE_MAPPING.md), [TEST_SUITE.md](TEST_SUITE.md).
 
 ---
 
@@ -18,21 +18,28 @@ See also: [SCOPE.md](SCOPE.md) (supported API keys), [TEST_SUITE.md](TEST_SUITE.
 | `nc` / `netcat` (optional) | Raw byte injection | Usually preinstalled |
 | `xxd` or `hexdump` (optional) | Inspect binary responses | Usually preinstalled |
 
-### Build and start gateway
+### Build and start (Phase 1B — with Iggy)
 
 ```bash
 # From iggy workspace root
-cargo build -p iggy-gateway-kafka
+cargo build -p server --bin iggy-server
+cargo build -p iggy_gateway_kafka --bin iggy-kafka-gateway
 
-# Terminal 1 — start listener (default 127.0.0.1:9093)
-RUST_LOG=info cargo run -p iggy-gateway-kafka
+# Terminal 1 — Iggy TCP (default 127.0.0.1:8090)
+cargo run -p server --bin iggy-server
+
+# Terminal 2 — Kafka gateway (bridge on by default)
+IGGY_TCP_ADDR=127.0.0.1:8090 RUST_LOG=info \
+  cargo run -p iggy_gateway_kafka --bin iggy-kafka-gateway
 ```
 
-Expected log:
+Expected gateway log:
 
-```text
-kafka listener bound on 127.0.0.1:9093
 ```
+kafka listener bound on 127.0.0.1:9093 (advertised as 127.0.0.1:9093) iggy_bridge=true
+```
+
+Stub-only mode (Phase 1A): `KAFKA_IGGY_BRIDGE=false cargo run -p iggy_gateway_kafka --bin iggy-kafka-gateway`
 
 ### Generate wire fixtures
 
@@ -152,10 +159,49 @@ Requires `kcat` installed. Gateway does **not** implement SASL or full broker se
 | ID | Test | Command | Expected (foundation) |
 | ---- | ------ | --------- | --------------------- |
 | G1 | Broker metadata | `kcat -b 127.0.0.1:9093 -L` | ApiVersions + Metadata handshake; broker appears in metadata |
-| G2 | Produce (likely fails later) | `echo "hello" \| kcat -b 127.0.0.1:9093 -t test -P` | May fail at coordinator/group stage — document actual error |
-| G3 | Consumer (likely fails later) | `kcat -b 127.0.0.1:9093 -t test -C -o beginning` | May fail without consumer groups — document actual error |
+| G2 | Produce message | `echo "hello" \| kcat -b 127.0.0.1:9093 -t test -P` | Message stored in Iggy (with bridge + topic created) |
+| G3 | Consume by offset | `kcat -b 127.0.0.1:9093 -t test -C -o beginning -e` | Receives produced message (no consumer group) |
 
-Record kcat version and exact error strings in your test log. G1 passing is the minimum bar for client compatibility smoke.
+Record kcat version and exact error strings in your test log.
+
+### Category I — Phase 1B Iggy bridge (requires Iggy + `KAFKA_IGGY_BRIDGE` enabled)
+
+| ID | Test | Steps | Expected |
+|----|------|-------|----------|
+| I1 | Create topic via Kafka | `kafka-message-gen` CreateTopics v2 or kcat `-L` after auto-create | Topic exists in Iggy (`iggy stream list`) |
+| I2 | Produce opaque batch | `send --api-key 0 --version 3` with fixture | `primary_ec=0`; message in Iggy topic |
+| I3 | ListOffsets latest | After produce, ListOffsets v1 `timestamp=-1` | Offset ≥ 1 |
+| I4 | Metadata known topic | Metadata v4 with topic name | `error_code=0`, partition count matches CreateTopics |
+| I5 | Metadata unknown topic | Metadata for `no-such-topic` | `error_code=3` per topic |
+
+### Category J — Phase 1B bridge negative paths (non-happy-path)
+
+Requires Iggy + bridge enabled. Mirrors `bridge_negative_integration_tests.rs`.
+
+| ID | Test | Steps | Expected |
+|----|------|-------|----------|
+| J1 | CreateTopics `num_partitions=0` | CreateTopics v2 with `num_partitions=0` | Per-topic `error_code=37`; topic **not** in Iggy |
+| J2 | CreateTopics `num_partitions=-1` | CreateTopics v2 with `num_partitions=-1` | `error_code=0`; topic created with 1 partition |
+| J3 | CreateTopics bad RF | `replication_factor=3` | `error_code=38` |
+| J4 | Produce no records | Produce v3 with null `records` bytes | Partition `error_code=42` |
+| J5 | Produce transactional | Produce v3 with `transactional_id` set | `error_code=42` |
+| J6 | Produce unknown topic | Produce to topic that was never created | `error_code=3` |
+| J7 | Fetch unknown topic | Fetch v4 on missing topic | Partition `error_code=3` |
+| J8 | Fetch partition `-1` | Fetch v4 with `partition=-1` on existing topic | `error_code=3` |
+| J9 | Fetch empty topic | Fetch v4 offset 0 on new empty topic | `error_code=0`, null `records` |
+| J10 | ListOffsets unknown topic | ListOffsets v1 `timestamp=-1` on missing topic | `error_code=3` |
+| J11 | ListOffsets bad timestamp | ListOffsets v1 `timestamp=-3` | `error_code=42` |
+| J12 | ListOffsets future ts | ListOffsets v1 with ms timestamp far in future on empty topic | `error_code=42` |
+| J13 | ListOffsets earliest empty | ListOffsets v1 `timestamp=-2` on empty topic | `error_code=0`, offset `0` |
+| J14 | Metadata known then unknown | Create topic; Metadata for known name then missing name | `0` then `3` |
+| J15 | Truncated Produce body | Send valid header + 5-byte garbage body for Produce v3 | `error_code=42`, gateway stays up |
+| J16 | Truncated Fetch body | Send incomplete Fetch v4 body | `error_code=42` |
+
+**Tip:** Run automated negative suite first:
+
+```bash
+cargo test -p iggy_gateway_kafka --test bridge_negative_unit_tests --test bridge_negative_integration_tests
+```
 
 ### Category H — Adversarial / negative input
 
@@ -172,12 +218,14 @@ Record kcat version and exact error strings in your test log. G1 passing is the 
 ### Kafka error codes used in #3421
 
 | Code | Name | When returned |
-| ------ | ------ | --------------- |
-| 0 | NONE | Successful stub response |
-| 42 | INVALID_REQUEST | Produce/Fetch/ListOffsets/CreateTopics decode failure; unsupported request header |
-| 3 | UNKNOWN_TOPIC_OR_PARTITION | Metadata stub per-topic error |
+|------|------|---------------|
+| 0 | NONE | Successful response |
+| 3 | UNKNOWN_TOPIC_OR_PARTITION | Unknown topic (Metadata/Fetch/Produce/ListOffsets bridge) |
 | 35 | UNSUPPORTED_VERSION | Out-of-range version or unlisted API key |
-| 42 | INVALID_REQUEST | Unsupported request header version |
+| 37 | INVALID_PARTITIONS | CreateTopics `num_partitions<=0` (not `-1`) |
+| 38 | INVALID_REPLICATION_FACTOR | CreateTopics `replication_factor` not 1 |
+| 42 | INVALID_REQUEST | Decode failure, transactional produce, null records, bad ListOffsets timestamp |
+| -1 | UNKNOWN_SERVER_ERROR | Produce ack inference failed after write (see IGGY_LIMITATIONS L4) |
 
 ### Response header rules
 
@@ -236,10 +284,13 @@ kcat version (if used): ___________
 [ ] F1–F6  TCP / connection behavior
 [ ] G1–G3  kcat client (record errors for G2/G3)
 [ ] H1–H3  Adversarial input
+[ ] I1–I5  Bridge happy path (Iggy required)
+[ ] J1–J16 Bridge negative paths (Iggy required)
 
 Automated regression:
-[ ] cargo test -p iggy-gateway-kafka — ___/103 passed
-[ ] cargo clippy -p iggy-gateway-kafka — clean / warnings noted
+[ ] cargo test -p iggy_gateway_kafka — ___/158 passed
+[ ] cargo test -p iggy_gateway_kafka --test bridge_negative_unit_tests --test bridge_negative_integration_tests — ___/34 passed
+[ ] cargo clippy -p iggy_gateway_kafka — clean / warnings noted
 
 Notes / failures:
 _________________________________

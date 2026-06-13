@@ -27,10 +27,11 @@ use tokio::time::{timeout, timeout_at};
 use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
+use crate::bridge::iggy_bridge::IggyBridge;
 use crate::error::{KafkaProtocolError, Result};
+use crate::handler::RequestHandler;
 use crate::protocol::api::{
     BrokerAdvertise, DEFAULT_KAFKA_PORT, ERROR_INVALID_REQUEST, encode_error_only_response,
-    handle_request,
 };
 use crate::protocol::codec::Decoder;
 use crate::protocol::header::{
@@ -110,6 +111,7 @@ impl BrokerAdvertise {
 
 pub struct KafkaServer {
     config: Arc<ServerConfig>,
+    bridge: Option<Arc<IggyBridge>>,
 }
 
 impl KafkaServer {
@@ -117,6 +119,15 @@ impl KafkaServer {
     pub fn new(config: ServerConfig) -> Self {
         Self {
             config: Arc::new(config),
+            bridge: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_bridge(config: ServerConfig, bridge: Arc<IggyBridge>) -> Self {
+        Self {
+            config: Arc::new(config),
+            bridge: Some(bridge),
         }
     }
 
@@ -134,17 +145,18 @@ impl KafkaServer {
         mut shutdown: broadcast::Receiver<()>,
     ) -> Result<()> {
         let local_addr = listener.local_addr()?;
-        let broker = Arc::new(BrokerAdvertise::from_server_config(
-            &self.config,
-            local_addr,
-        )?);
+        let broker = Arc::new(BrokerAdvertise::from_server_config(&self.config, local_addr)?);
+        let handler = Arc::new(self.bridge.as_ref().map_or_else(
+            || RequestHandler::stub((*broker).clone()),
+            |bridge| RequestHandler::with_bridge((*broker).clone(), Arc::clone(bridge)),
+        ));
         info!(
-            "kafka listener bound on {} (advertised as {}:{})",
-            local_addr, broker.host, broker.port
+            "kafka listener bound on {} (advertised as {}:{}) iggy_bridge={}",
+            local_addr, broker.host, broker.port, self.bridge.is_some()
         );
 
         let tracker = TaskTracker::new();
-        let broker = Arc::clone(&broker);
+        let handler = Arc::clone(&handler);
 
         loop {
             tokio::select! {
@@ -177,9 +189,9 @@ impl KafkaServer {
                                 warn!(%peer, "TCP_NODELAY failed: {e}");
                             }
                             let cfg = Arc::clone(&self.config);
-                            let broker = Arc::clone(&broker);
+                            let handler = Arc::clone(&handler);
                             tracker.spawn(async move {
-                                if let Err(err) = handle_connection(stream, cfg, peer, broker).await {
+                                if let Err(err) = handle_connection(stream, cfg, peer, handler).await {
                                     warn!(%peer, "connection closed with error: {err}");
                                 }
                             });
@@ -217,7 +229,7 @@ async fn handle_connection(
     mut stream: TcpStream,
     config: Arc<ServerConfig>,
     peer: SocketAddr,
-    broker: Arc<BrokerAdvertise>,
+    handler: Arc<RequestHandler>,
 ) -> Result<()> {
     debug!(%peer, "connection accepted");
 
@@ -277,7 +289,9 @@ async fn handle_connection(
         );
 
         let body = decoder.read_bytes(decoder.remaining())?;
-        let body_response = handle_request(req.api_key, req.api_version, body, &broker);
+        let body_response = handler
+            .handle(req.api_key, req.api_version, body)
+            .await;
 
         let resp_header = ResponseHeader {
             correlation_id: req.correlation_id,

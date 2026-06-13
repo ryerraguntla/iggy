@@ -15,7 +15,29 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use iggy::prelude::IggyError;
 use thiserror::Error;
+
+/// Errors from the Iggy backend bridge layer.
+#[derive(Debug, Error)]
+pub enum BridgeError {
+    #[error("invalid kafka topic name for iggy mapping: {0}")]
+    InvalidTopicName(String),
+    /// Write may have succeeded; offset inference failed. Mapped to Kafka
+    /// `ERROR_UNKNOWN_SERVER_ERROR` (-1) — no dedicated "ack lost" code; clients may retry
+    /// and duplicate. See `IGGY_LIMITATIONS.md` (L4).
+    #[error("could not determine produce partition/offset after send")]
+    ProduceAckUnknown,
+    /// Timestamp seek unsupported or no matching message. Mapped to `ERROR_INVALID_REQUEST`
+    /// (42), not 43 (`UNSUPPORTED_FOR_MESSAGE_FORMAT`), because the issue is the seek
+    /// parameter, not batch format.
+    #[error("timestamp-based ListOffsets is not supported for this seek value")]
+    UnsupportedTimestampSeek,
+    #[error("iggy error: {0}")]
+    Iggy(IggyError),
+}
+
+pub type BridgeResult<T> = std::result::Result<T, BridgeError>;
 
 #[derive(Debug, Error)]
 pub enum KafkaProtocolError {

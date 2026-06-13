@@ -1,0 +1,34 @@
+# Kafka gateway + Iggy — local Phase 1B smoke stack
+#
+# Usage:
+#   docker compose -f gateways/kafka/docker-compose.yml up --build
+#
+# Then (from repo root, with Kafka client tools or kafka-message-gen):
+#   cargo run -p kafka-message-gen -- verify --host 127.0.0.1:9093
+
+services:
+  iggy:
+    image: apache/iggy:latest
+    ports:
+      - "8090:8090"
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "8090"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  kafka-gateway:
+    build:
+      context: ../..
+      dockerfile: gateways/kafka/Dockerfile
+    depends_on:
+      iggy:
+        condition: service_healthy
+    environment:
+      KAFKA_BIND_ADDR: "0.0.0.0:9093"
+      KAFKA_ADVERTISED_HOST: "127.0.0.1"
+      IGGY_TCP_ADDR: "iggy:8090"
+      RUST_LOG: "info"
+    ports:
+      - "9093:9093"

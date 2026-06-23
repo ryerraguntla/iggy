@@ -216,7 +216,6 @@ impl Decoder {
             });
         }
         let count = count as usize;
-
         for _ in 0..count {
             self.read_varint()?; // tag number
             let size = usize::try_from(self.read_varint()?).map_err(|_| {

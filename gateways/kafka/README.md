@@ -14,7 +14,7 @@ Start Iggy (TCP `8090`), then the gateway:
 cargo run -p server --bin iggy-server
 
 # Terminal 2 — Kafka gateway (Iggy bridge enabled by default)
-IGGY_TCP_ADDR=127.0.0.1:8090 cargo run -p iggy_gateway_kafka --bin iggy-kafka-gateway
+IGGY_TCP_ADDR=127.0.0.1:8090 cargo run -p iggy-gateway-kafka
 ```
 
 Default Kafka bind: `127.0.0.1:9093`. Override with `KAFKA_BIND_ADDR`. Set `KAFKA_IGGY_BRIDGE=false` for stub-only mode (#3421).

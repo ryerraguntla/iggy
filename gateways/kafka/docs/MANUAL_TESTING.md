@@ -23,14 +23,14 @@ See also: [SCOPE.md](SCOPE.md), [BRIDGE_MAPPING.md](BRIDGE_MAPPING.md), [TEST_SU
 ```bash
 # From iggy workspace root
 cargo build -p server --bin iggy-server
-cargo build -p iggy_gateway_kafka --bin iggy-kafka-gateway
+cargo build -p iggy-gateway-kafka
 
 # Terminal 1 — Iggy TCP (default 127.0.0.1:8090)
 cargo run -p server --bin iggy-server
 
 # Terminal 2 — Kafka gateway (bridge on by default)
 IGGY_TCP_ADDR=127.0.0.1:8090 RUST_LOG=info \
-  cargo run -p iggy_gateway_kafka --bin iggy-kafka-gateway
+  cargo run -p iggy-gateway-kafka
 ```
 
 Expected gateway log:
@@ -39,7 +39,7 @@ Expected gateway log:
 kafka listener bound on 127.0.0.1:9093 (advertised as 127.0.0.1:9093) iggy_bridge=true
 ```
 
-Stub-only mode (Phase 1A): `KAFKA_IGGY_BRIDGE=false cargo run -p iggy_gateway_kafka --bin iggy-kafka-gateway`
+Stub-only mode (Phase 1A): `KAFKA_IGGY_BRIDGE=false cargo run -p iggy-gateway-kafka`
 
 ### Generate wire fixtures
 

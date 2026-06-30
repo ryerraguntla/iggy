@@ -32,7 +32,7 @@ Related docs:
 
 ---
 
-## Summary - cross-cutting criticals (fix first)
+## Summary - cross-cutting critical (fix first)
 
 These affect the success path for ordinary clients and should be addressed before the
 per-API minor items below.
@@ -84,7 +84,7 @@ per-API minor items below.
 | FG-FET-08 | minor | An empty fetch result encodes `records=null`, not zero-length bytes (real brokers always send an empty array, never null) | `responses.rs:748-761,560-564` | Happens on every idle poll; mainstream clients tolerate null, but it deviates from real-broker wire output. |
 | FG-FET-09 | minor | Iggy's own per-message `header.timestamp` is discarded entirely; Fetch returns only the producer-embedded `CreateTime`. `message.timestamp.type=LogAppendTime` is silently a no-op (not even present in the `CreatableTopic` struct) | `iggy_bridge.rs:48-52` (`FetchedMessage` has no timestamp field), `requests.rs:369-374` | Tooling that depends on `LogAppendTime` gets the producer's clock instead of the broker append time. |
 | FG-FET-10 | minor | `log_start_offset` is computed as "the first offset returned by this poll", not the partition's true retained floor, and is hardcoded to 0 when the poll returns nothing | `iggy_bridge.rs:231` | Latent - correct only while nothing is ever deleted; wrong as soon as Iggy retention triggers. |
-| FG-FET-11 | minor (latent) | `isolation_level` is decoded but unused - currently correct (no transactions, so LSO == HWM), but there is no plumbing if Iggy ever adds transactions | `requests.rs` decode, unused in `handler.rs` | No current impact; future-risk only. |
+| FG-FET-11 | minor (latent) | `isolation_level` is decoded but unused - currently correct (no transactions, so "LSO == HWM"), but there is no plumbing if Iggy ever adds transactions | `requests.rs` decode, unused in `handler.rs` | No current impact; future-risk only. |
 
 ---
 
@@ -107,7 +107,7 @@ per-API minor items below.
 | FG-MD-01 | critical | Same as [C1](#c1---metadata-response-wire-format-is-malformed-on-the-bridge-path) | - | - |
 | FG-MD-02 | major | Same as [C7](#c7---listing-all-topics-always-returns-an-empty-list) | - | - |
 | FG-MD-03 | major | Same as [C6](#c6---metadata-never-auto-creates-unknown-topics) | - | - |
-| FG-MD-04 | major | [L1](IGGY_LIMITATIONS.md#l1--metadata-encoder-deduplication) (encoder dedup) is also a correctness divergence, not just a maintenance issue: the stub path (`KAFKA_IGGY_BRIDGE=0`) returns parseable-but-always-"not found"; the bridge path returns malformed ([C1](#c1---metadata-response-wire-format-is-malformed-on-the-bridge-path)) for the same request/version once a topic has partitions | `api.rs:283-345` vs `responses.rs:637-734` | Toggling bridge mode changes "always wrong" to "unparseable" - there is no safe mode for real topics. |
+| FG-MD-04 | major | [L1](IGGY_LIMITATIONS.md#l1--metadata-encoder-deduplication) (encoder dedup) is also a correctness divergence, not just a maintenance issue: the stub path (`KAFKA_IGGY_BRIDGE=0`) returns parseable-but-always-"not found"; the bridge path returns malformed ([C1](#c1---metadata-response-wire-format-is-malformed-on-the-bridge-path)) for the same request/version once a topic has partitions | `api.rs:283-345` vs `responses.rs:637-734` | Toggling bridge mode changes "always wrong" to "unparsable" - there is no safe mode for real topics. |
 | FG-MD-05 | minor | `leader=1` (matches the broker's `node_id=1`), but `replicas`/`isr` arrays are the literal value `0` - the leader is not a member of its own replica/ISR set (broker id 0 does not exist). Latent until [C1](#c1---metadata-response-wire-format-is-malformed-on-the-bridge-path) is fixed | `responses.rs:668-674,713-720`, see also `BRIDGE_MAPPING.md` "replica=0,isr=0" | Tooling that validates the "leader in ISR" invariant flags the partition as inconsistent. |
 | FG-MD-06 | minor | `leader_epoch` (v7+) is hardcoded to `0`, vs ListOffsets' `-1` for the same partition - `0` says "real tracked epoch 0", `-1` says "not tracked", which is inconsistent | `responses.rs:672/717` vs ListOffsets `responses.rs:617-618` | Unlikely to cause a hard failure, but epoch-aware client logic gets contradictory signals across APIs. |
 | FG-MD-07 | minor | `cluster_id` (v2+) is always `null` | `api.rs:297,321`, `responses.rs:658,698` | `AdminClient.describeCluster().clusterId()` / `KafkaStreams.clusterId()` return null; at least stable (no false cross-cluster mismatch). |
@@ -140,7 +140,7 @@ per-API minor items below.
 
 ---
 
-## Detailed findings - cross-cutting criticals
+## Detailed findings - cross-cutting critical
 
 ### C1 - Metadata response wire format is malformed on the bridge path
 
@@ -420,5 +420,5 @@ CreateTopics v2-5 decode/encode/dispatch coverage has no drift versus `SUPPORTED
 
 New gaps discovered during future work should be appended to the relevant per-API summary
 table with the next available `FG-<API>-NN` ID, and a detailed section added if the item is
-severe enough to warrant one (criticals/majors generally should; minors can stay
+severe enough to warrant one (critical/major generally should; minors can stay
 table-only). Mirror new items into [TODO_TASKS.md](TODO_TASKS.md).

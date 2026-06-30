@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Iggy-backed bridge integration tests (spawns `iggy-server` via test harness).
+//! Iggy-backed bridge integration tests (spawns `iggy-server` for bridge I/O).
 
 #[path = "common/server.rs"]
 mod server;
@@ -25,27 +25,7 @@ mod tcp;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use integration::harness::{TestHarnessBuilder, TestServerConfig};
-
-fn iggy_server_config() -> TestServerConfig {
-    let mut config = TestServerConfig::default();
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_iggy-server") {
-        config.executable_path = Some(path);
-    } else {
-        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let workspace_root = manifest
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("workspace root");
-        let candidate = workspace_root.join("target/debug/iggy-server");
-        assert!(
-            candidate.exists(),
-            "build iggy-server first: cargo build -p server --bin iggy-server"
-        );
-        config.executable_path = Some(candidate.display().to_string());
-    }
-    config
-}
+use serial_test::serial;
 
 use iggy_gateway_kafka::protocol::api::{
     API_KEY_CREATE_TOPICS, API_KEY_LIST_OFFSETS, API_KEY_METADATA, ERROR_NONE,
@@ -54,7 +34,7 @@ use iggy_gateway_kafka::protocol::api::{
 use iggy_gateway_kafka::protocol::codec::{Decoder, Encoder};
 use iggy_gateway_kafka::{IggyBridge, IggyBridgeConfig};
 
-use server::spawn_test_server_with_bridge;
+use server::{iggy::IggyTestServer, spawn_test_server_with_bridge};
 use tcp::round_trip;
 
 fn parse_metadata_v4_topic_error(body: &Bytes) -> i16 {
@@ -71,12 +51,9 @@ fn parse_metadata_v4_topic_error(body: &Bytes) -> i16 {
     m.read_i16().unwrap() // first topic error_code
 }
 
-async fn iggy_bridge_from_harness(
-    harness: &integration::harness::TestHarness,
-) -> Arc<IggyBridge> {
-    let tcp_addr = harness.server().tcp_addr().expect("iggy tcp addr");
+async fn iggy_bridge_from_server(server: &IggyTestServer) -> Arc<IggyBridge> {
     let config = IggyBridgeConfig {
-        server_address: tcp_addr.to_string(),
+        server_address: server.tcp_addr().to_string(),
         ..IggyBridgeConfig::default()
     };
     Arc::new(
@@ -87,14 +64,10 @@ async fn iggy_bridge_from_harness(
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_produce_fetch_roundtrip_on_iggy() {
-    let mut harness = TestHarnessBuilder::default()
-        .server(iggy_server_config())
-        .build()
-        .expect("harness");
-    harness.start().await.expect("start iggy");
-
-    let bridge = iggy_bridge_from_harness(&harness).await;
+    let iggy = IggyTestServer::start().await;
+    let bridge = iggy_bridge_from_server(&iggy).await;
     bridge
         .ensure_stream_and_topic("bridge-e2e-topic", 1)
         .await
@@ -115,18 +88,14 @@ async fn bridge_produce_fetch_roundtrip_on_iggy() {
     assert_eq!(fetched.messages.len(), 1);
     assert_eq!(fetched.messages[0].payload, payload);
 
-    harness.stop().await.expect("stop iggy");
+    iggy.stop();
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_kafka_wire_create_topics_and_metadata() {
-    let mut harness = TestHarnessBuilder::default()
-        .server(iggy_server_config())
-        .build()
-        .expect("harness");
-    harness.start().await.expect("start iggy");
-
-    let bridge = iggy_bridge_from_harness(&harness).await;
+    let iggy = IggyTestServer::start().await;
+    let bridge = iggy_bridge_from_server(&iggy).await;
     let (kafka_addr, _shutdown) = spawn_test_server_with_bridge(bridge).await;
 
     let mut create_body = Encoder::with_capacity(64);
@@ -170,18 +139,14 @@ async fn bridge_kafka_wire_create_topics_and_metadata() {
     let topic_error = parse_metadata_v4_topic_error(&meta_resp);
     assert_eq!(topic_error, ERROR_NONE);
 
-    harness.stop().await.expect("stop iggy");
+    iggy.stop();
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_kafka_wire_metadata_unknown_topic() {
-    let mut harness = TestHarnessBuilder::default()
-        .server(iggy_server_config())
-        .build()
-        .expect("harness");
-    harness.start().await.expect("start iggy");
-
-    let bridge = iggy_bridge_from_harness(&harness).await;
+    let iggy = IggyTestServer::start().await;
+    let bridge = iggy_bridge_from_server(&iggy).await;
     let (kafka_addr, _shutdown) = spawn_test_server_with_bridge(bridge).await;
 
     let mut meta_body = Encoder::with_capacity(16);
@@ -198,18 +163,14 @@ async fn bridge_kafka_wire_metadata_unknown_topic() {
         ERROR_UNKNOWN_TOPIC_OR_PARTITION
     );
 
-    harness.stop().await.expect("stop iggy");
+    iggy.stop();
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_list_offsets_latest_after_produce() {
-    let mut harness = TestHarnessBuilder::default()
-        .server(iggy_server_config())
-        .build()
-        .expect("harness");
-    harness.start().await.expect("start iggy");
-
-    let bridge = iggy_bridge_from_harness(&harness).await;
+    let iggy = IggyTestServer::start().await;
+    let bridge = iggy_bridge_from_server(&iggy).await;
     let (kafka_addr, _shutdown) = spawn_test_server_with_bridge(bridge).await;
 
     let mut create_body = Encoder::with_capacity(64);
@@ -232,7 +193,7 @@ async fn bridge_list_offsets_latest_after_produce() {
     )
     .await;
 
-    let bridge_direct = iggy_bridge_from_harness(&harness).await;
+    let bridge_direct = iggy_bridge_from_server(&iggy).await;
     bridge_direct
         .produce("offset-topic", 0, Bytes::from_static(b"x"))
         .await
@@ -268,5 +229,5 @@ async fn bridge_list_offsets_latest_after_produce() {
     d.read_i64().unwrap(); // timestamp unavailable sentinel
     assert!(d.read_i64().unwrap() >= 1); // latest offset
 
-    harness.stop().await.expect("stop iggy");
+    iggy.stop();
 }

@@ -10,7 +10,7 @@ them to the "Done" section at the bottom with the PR reference.
 
 ---
 
-## Cross-cutting criticals (fix first)
+## Cross-cutting critical (fix first)
 
 - [x] **C1** - Metadata response wire format is malformed on the bridge path (missing
   `error_code:i16` per partition; v9 array encoding wrong). [detail](FUNCTIONAL_GAPS.md#c1---metadata-response-wire-format-is-malformed-on-the-bridge-path)

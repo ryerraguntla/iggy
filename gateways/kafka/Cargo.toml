@@ -50,9 +50,10 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+iggy = { workspace = true }
 iggy_common = { workspace = true }
-integration = { workspace = true }
 kafka-protocol = "0.17"
+serial_test = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
 
 [lints.clippy]

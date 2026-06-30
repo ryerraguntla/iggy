@@ -33,7 +33,7 @@ Related docs:
 
 **Failure mode:** If another producer (any TCP client, same topic) appends between this call's before/after snapshots, it may increment a **lower-indexed** partition first. This request then reports **that other writer's** partition and offset in its Produce response — wrong `base_offset` for the Kafka client that just sent.
 
-**Client impact:** Idempotent/sequence producers may mis-assign sequence numbers; retries can deduplicate incorrectly or duplicate if the client treats the wrong offset as its own.
+**Client impact:** Idempotent/sequence producers may miss assign sequence numbers; retries can deduplicate incorrectly or duplicate if the client treats the wrong offset as its own.
 
 ### Explicit partition produce
 

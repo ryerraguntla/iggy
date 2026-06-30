@@ -18,6 +18,9 @@
 //! Test server spawn helper — compiled into each integration test binary via `#[path]`.
 #![allow(dead_code)]
 
+#[path = "iggy.rs"]
+pub mod iggy;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;

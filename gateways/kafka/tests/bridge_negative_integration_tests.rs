@@ -27,7 +27,7 @@ mod wire;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use integration::harness::{TestHarnessBuilder, TestServerConfig};
+use serial_test::serial;
 
 use iggy_gateway_kafka::protocol::api::{
     API_KEY_CREATE_TOPICS, API_KEY_FETCH, API_KEY_LIST_OFFSETS, API_KEY_METADATA, API_KEY_PRODUCE,
@@ -36,7 +36,7 @@ use iggy_gateway_kafka::protocol::api::{
 };
 use iggy_gateway_kafka::{IggyBridge, IggyBridgeConfig};
 
-use server::spawn_test_server_with_bridge;
+use server::{iggy::IggyTestServer, spawn_test_server_with_bridge};
 use tcp::round_trip;
 use wire::{
     create_topics_v2_body, fetch_v4_body, list_offsets_v1_body, metadata_v4_body, produce_v3_body,
@@ -45,32 +45,9 @@ use wire::{
     parse_produce_v3_partition_error,
 };
 
-fn iggy_server_config() -> TestServerConfig {
-    let mut config = TestServerConfig::default();
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_iggy-server") {
-        config.executable_path = Some(path);
-    } else {
-        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let workspace_root = manifest
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("workspace root");
-        let candidate = workspace_root.join("target/debug/iggy-server");
-        assert!(
-            candidate.exists(),
-            "build iggy-server first: cargo build -p server --bin iggy-server"
-        );
-        config.executable_path = Some(candidate.display().to_string());
-    }
-    config
-}
-
-async fn bridge_harness(
-    harness: &integration::harness::TestHarness,
-) -> Arc<IggyBridge> {
-    let tcp_addr = harness.server().tcp_addr().expect("iggy tcp");
+async fn iggy_bridge_from_server(server: &IggyTestServer) -> Arc<IggyBridge> {
     let config = IggyBridgeConfig {
-        server_address: tcp_addr.to_string(),
+        server_address: server.tcp_addr().to_string(),
         ..IggyBridgeConfig::default()
     };
     Arc::new(
@@ -85,20 +62,17 @@ where
     F: FnOnce(std::net::SocketAddr, Arc<IggyBridge>) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    let mut harness = TestHarnessBuilder::default()
-        .server(iggy_server_config())
-        .build()
-        .expect("harness");
-    harness.start().await.expect("start iggy");
-    let bridge = bridge_harness(&harness).await;
+    let iggy = IggyTestServer::start().await;
+    let bridge = iggy_bridge_from_server(&iggy).await;
     let (kafka_addr, _shutdown) = spawn_test_server_with_bridge(bridge.clone()).await;
     test(kafka_addr, bridge).await;
-    harness.stop().await.expect("stop iggy");
+    iggy.stop();
 }
 
 // ── Metadata ─────────────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 async fn bridge_metadata_unknown_topic_returns_error_3() {
     with_bridge_server(|addr, _| async move {
         let body = metadata_v4_body("no-such-topic-neg");
@@ -112,6 +86,7 @@ async fn bridge_metadata_unknown_topic_returns_error_3() {
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_metadata_known_vs_unknown_topics_sequential() {
     with_bridge_server(|addr, bridge| async move {
         bridge
@@ -145,6 +120,7 @@ async fn bridge_metadata_known_vs_unknown_topics_sequential() {
 // ── CreateTopics ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 async fn bridge_create_topics_zero_partitions_returns_invalid_partitions() {
     with_bridge_server(|addr, _| async move {
         let body = create_topics_v2_body("zero-part-topic", 0, 1);
@@ -158,6 +134,7 @@ async fn bridge_create_topics_zero_partitions_returns_invalid_partitions() {
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_create_topics_minus_one_partitions_succeeds() {
     with_bridge_server(|addr, bridge| async move {
         let body = create_topics_v2_body("default-part-topic", -1, 1);
@@ -171,6 +148,7 @@ async fn bridge_create_topics_minus_one_partitions_succeeds() {
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_create_topics_invalid_replication_factor_aborts_request() {
     with_bridge_server(|addr, _| async move {
         let body = create_topics_v2_body("bad-rf-topic", 1, 3);
@@ -184,6 +162,7 @@ async fn bridge_create_topics_invalid_replication_factor_aborts_request() {
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_create_topics_zero_partitions_does_not_create_topic() {
     with_bridge_server(|addr, bridge| async move {
         let body = create_topics_v2_body("never-created-topic", 0, 1);
@@ -196,6 +175,7 @@ async fn bridge_create_topics_zero_partitions_does_not_create_topic() {
 // ── Produce ──────────────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 async fn bridge_produce_null_records_returns_invalid_request() {
     with_bridge_server(|addr, _| async move {
         let body = produce_v3_body("prod-neg-topic", 0, None, None);
@@ -209,6 +189,7 @@ async fn bridge_produce_null_records_returns_invalid_request() {
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_produce_transactional_id_returns_invalid_request() {
     with_bridge_server(|addr, _| async move {
         let body = produce_v3_body(
@@ -230,6 +211,7 @@ async fn bridge_produce_transactional_id_returns_invalid_request() {
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_produce_truncated_body_returns_invalid_request() {
     with_bridge_server(|addr, _| async move {
         let truncated = Bytes::from_static(&[0, 0, 0, 1, 0]); // incomplete produce v3
@@ -245,6 +227,7 @@ async fn bridge_produce_truncated_body_returns_invalid_request() {
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_produce_unknown_topic_returns_unknown_topic_or_partition() {
     with_bridge_server(|addr, _| async move {
         let body = produce_v3_body("missing-produce-topic", 0, None, Some(b"x"));
@@ -260,6 +243,7 @@ async fn bridge_produce_unknown_topic_returns_unknown_topic_or_partition() {
 // ── Fetch ────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 async fn bridge_fetch_unknown_topic_returns_error_3() {
     with_bridge_server(|addr, _| async move {
         let body = fetch_v4_body("missing-fetch-topic", 0, 0);
@@ -273,6 +257,7 @@ async fn bridge_fetch_unknown_topic_returns_error_3() {
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_fetch_negative_partition_returns_error_3() {
     with_bridge_server(|addr, bridge| async move {
         bridge
@@ -290,6 +275,7 @@ async fn bridge_fetch_negative_partition_returns_error_3() {
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_fetch_truncated_body_returns_invalid_request() {
     with_bridge_server(|addr, _| async move {
         let truncated = Bytes::from_static(&[0, 0, 0, 7]);
@@ -303,6 +289,7 @@ async fn bridge_fetch_truncated_body_returns_invalid_request() {
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_fetch_empty_topic_returns_no_records() {
     with_bridge_server(|addr, bridge| async move {
         bridge
@@ -330,6 +317,7 @@ async fn bridge_fetch_empty_topic_returns_no_records() {
 // ── ListOffsets ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 async fn bridge_list_offsets_unknown_topic_returns_error_3() {
     with_bridge_server(|addr, _| async move {
         let body = list_offsets_v1_body("missing-offset-topic", 0, -1);
@@ -343,6 +331,7 @@ async fn bridge_list_offsets_unknown_topic_returns_error_3() {
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_list_offsets_bad_timestamp_sentinel_returns_invalid_request() {
     with_bridge_server(|addr, bridge| async move {
         bridge
@@ -360,6 +349,7 @@ async fn bridge_list_offsets_bad_timestamp_sentinel_returns_invalid_request() {
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_list_offsets_future_timestamp_no_match_returns_invalid_request() {
     with_bridge_server(|addr, bridge| async move {
         bridge
@@ -378,6 +368,7 @@ async fn bridge_list_offsets_future_timestamp_no_match_returns_invalid_request()
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_list_offsets_negative_partition_returns_error_3() {
     with_bridge_server(|addr, bridge| async move {
         bridge
@@ -395,6 +386,7 @@ async fn bridge_list_offsets_negative_partition_returns_error_3() {
 }
 
 #[tokio::test]
+#[serial]
 async fn bridge_list_offsets_earliest_on_empty_partition_returns_zero() {
     with_bridge_server(|addr, bridge| async move {
         bridge

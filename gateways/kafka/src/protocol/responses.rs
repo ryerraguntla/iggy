@@ -404,6 +404,45 @@ pub struct MetadataTopicOutcome {
     pub partitions_count: u32,
 }
 
+/// Advertised broker id returned in Metadata partition entries.
+const METADATA_BROKER_NODE_ID: i32 = 1;
+
+/// Sentinel when the gateway does not track leader epochs.
+const METADATA_LEADER_EPOCH: i32 = -1;
+
+/// Single-broker cluster: leader is the only replica and ISR member.
+const METADATA_SINGLE_BROKER_REPLICA: [i32; 1] = [METADATA_BROKER_NODE_ID];
+
+/// Encode one successful `MetadataResponsePartition` (Kafka keys 3, v0–v9 in scope).
+fn write_metadata_partition(e: &mut Encoder, api_version: i16, partition_index: u32) {
+    let partition_index =
+        i32::try_from(partition_index).expect("metadata partition index fits i32");
+    let flexible = api_version >= 9;
+
+    e.write_i16(ERROR_NONE);
+    e.write_i32(partition_index);
+    e.write_i32(METADATA_BROKER_NODE_ID);
+
+    if api_version >= 7 {
+        e.write_i32(METADATA_LEADER_EPOCH);
+    }
+
+    if flexible {
+        e.write_compact_i32_array(&METADATA_SINGLE_BROKER_REPLICA);
+        e.write_compact_i32_array(&METADATA_SINGLE_BROKER_REPLICA);
+        if api_version >= 5 {
+            e.write_compact_i32_array(&[]);
+        }
+        e.write_empty_tagged_fields();
+    } else {
+        e.write_legacy_i32_array(&METADATA_SINGLE_BROKER_REPLICA);
+        e.write_legacy_i32_array(&METADATA_SINGLE_BROKER_REPLICA);
+        if api_version >= 5 {
+            e.write_legacy_i32_array(&[]);
+        }
+    }
+}
+
 /// Encode a Produce response for one or more topics.
 pub fn encode_produce_response_from_topic_outcomes(
     version: i16,
@@ -665,13 +704,7 @@ pub fn encode_metadata_response_from_topics(
             if topic.error_code == ERROR_NONE {
                 e.write_varint((topic.partitions_count as u64) + 1);
                 for p in 0..topic.partitions_count {
-                    e.write_i32(i32::try_from(p).expect("partition index"));
-                    e.write_i32(1);
-                    e.write_i32(0);
-                    e.write_i32(0);
-                    e.write_i32(0);
-                    e.write_i32(0);
-                    e.write_empty_tagged_fields();
+                    write_metadata_partition(&mut e, api_version, p);
                 }
             } else {
                 e.write_varint(1);
@@ -710,12 +743,7 @@ pub fn encode_metadata_response_from_topics(
             if topic.error_code == ERROR_NONE {
                 e.write_i32(i32::try_from(topic.partitions_count).expect("partition count"));
                 for p in 0..topic.partitions_count {
-                    e.write_i32(i32::try_from(p).expect("partition index"));
-                    e.write_i32(1);
-                    e.write_i32(0);
-                    e.write_i32(0);
-                    e.write_i32(0);
-                    e.write_i32(0);
+                    write_metadata_partition(&mut e, api_version, p);
                 }
             } else {
                 e.write_i32(0);

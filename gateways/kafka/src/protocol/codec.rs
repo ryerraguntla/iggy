@@ -368,6 +368,24 @@ impl Encoder {
     pub fn write_empty_tagged_fields(&mut self) {
         self.write_varint(0);
     }
+
+    /// Legacy Kafka `int32[]`: `i32` length then elements.
+    pub fn write_legacy_i32_array(&mut self, values: &[i32]) {
+        self.write_i32(
+            i32::try_from(values.len()).expect("legacy i32 array length fits i32"),
+        );
+        for value in values {
+            self.write_i32(*value);
+        }
+    }
+
+    /// Flexible Kafka compact `int32[]`: unsigned varint `len + 1` then elements.
+    pub fn write_compact_i32_array(&mut self, values: &[i32]) {
+        self.write_varint((values.len() + 1) as u64);
+        for value in values {
+            self.write_i32(*value);
+        }
+    }
     #[must_use]
     pub fn freeze(self) -> Bytes {
         self.bytes.freeze()

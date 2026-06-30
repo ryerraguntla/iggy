@@ -12,7 +12,7 @@ them to the "Done" section at the bottom with the PR reference.
 
 ## Cross-cutting criticals (fix first)
 
-- [ ] **C1** - Metadata response wire format is malformed on the bridge path (missing
+- [x] **C1** - Metadata response wire format is malformed on the bridge path (missing
   `error_code:i16` per partition; v9 array encoding wrong). [detail](FUNCTIONAL_GAPS.md#c1---metadata-response-wire-format-is-malformed-on-the-bridge-path)
 - [ ] **C2** - Fetch on an out-of-range partition can panic the server (DoS via ordinary
   request). [detail](FUNCTIONAL_GAPS.md#c2---fetch-on-out-of-range-partition-can-panic-the-server)

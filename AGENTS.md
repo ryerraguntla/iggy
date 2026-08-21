@@ -133,6 +133,7 @@ description). Load `connectors-overview` first as router.
 - [connector-source](.claude/skills/connector-source/SKILL.md) - source plugin authoring
 - [connector-transform](.claude/skills/connector-transform/SKILL.md) - transform authoring
 - [connector-testing](.claude/skills/connector-testing/SKILL.md) - unit + integration test patterns
+- [connector-pr-review](.claude/skills/connector-pr-review/SKILL.md) - PR review checklist (recurring blockers)
 
 ## Repo-wide principles
 

@@ -34,7 +34,8 @@ successful send.
 
 ## Quick reference
 
-- Skeleton: [TEMPLATE.md](TEMPLATE.md) (load on demand).
+- Skeleton: [TEMPLATE.md](TEMPLATE.md) (fill-in-the-blank kit — implement only `TODO(backend)`).
+- PR pre-flight: [connector-pr-review](../connector-pr-review/SKILL.md).
 - Exemplars: `random_source` (minimal + canonical state tests), `postgres_source` (cursor / delete-after-read / processed-column modes, restart-survives-state tests), `elasticsearch_source` (scroll cursor), `influxdb_source` (time-series scan).
 
 ## Hard rules

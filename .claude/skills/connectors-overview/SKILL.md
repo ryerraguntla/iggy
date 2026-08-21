@@ -63,6 +63,7 @@ Headers set on the source side ride through transforms (which may modify, drop, 
 | Change runtime internals (FFI, manager, state, ...) | `connector-runtime`   |
 | Add a transform (field-level or format conversion)  | `connector-transform` |
 | Write unit / integration tests for any of the above | `connector-testing`   |
+| Review a sink/source PR / pre-flight before `/ready` | `connector-pr-review` |
 
 ## Stick to conventions
 
@@ -213,6 +214,13 @@ Each implemented in at least one in-tree plugin or runtime path.
 - Plain `String` for a credential field - use `SecretString`.
 - `tokio::spawn` inside plugin code - runtime owns lifecycle.
 - `std::time::SystemTime::now()` in transforms - non-deterministic, breaks tests.
+- Returning `Ok(())` from `consume` after a failed batch (offsets can still advance).
+- Random UUIDs as message IDs / dedup keys.
+- Classifying retryability via `err.to_string()` substring matches.
+- README defaults that disagree with code consts.
+- Invented config knob names (`request_timeout`, `retry_max_delay`) instead of the canon in `connector-pr-review`.
+
+For the full PR review checklist (blockers, delivery-semantics paragraph, pre-flight paste), load [connector-pr-review](../connector-pr-review/SKILL.md).
 
 ## File map
 

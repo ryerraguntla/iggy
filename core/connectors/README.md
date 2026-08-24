@@ -73,6 +73,8 @@ If the library is not found, the runtime logs all searched paths to help diagnos
 
 Sinks are responsible for consuming the messages from the configured stream(s) and topic(s) and sending them further to the specified destination. For example, the Quickwit sink connector is responsible for sending the messages to the Quickwit indexer.
 
+**New contributors:** follow [Authoring sinks and sources](docs/authoring-sinks-and-sources.md) and the fill-in-the-blank kits under `.claude/skills/connector-{sink,source}/TEMPLATE.md`. Pre-flight PRs with `.claude/skills/connector-pr-review/SKILL.md`.
+
 Please refer to the **[Sink documentation](https://github.com/apache/iggy/tree/master/core/connectors/sinks)** for the details about the configuration and the sample implementation.
 
 When implementing `Sink`, make sure to use the `sink_connector!` macro to expose the FFI interface and allow the connector runtime to register the sink with the runtime. The macro also exports the connector's version (from `Cargo.toml`) which is reported in the runtime's `/stats` endpoint.

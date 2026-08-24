@@ -25,7 +25,7 @@ Repo-wide rules (Apache headers, fmt/sort/clippy order, idiomatic Rust traits, i
 
 ## STOP and ask the user before
 
-- Bumping `iggy_connector_sdk` MAJOR version or changing any FFI signature in `sdk/src/{sink,source}.rs` - breaks every pre-built plugin `.so`.
+- Bumping `iggy_connector_sdk` MAJOR version or changing any FFI signature in `sdk/src/{sink,source}.rs` - breaks every pre-built plugin `.so`. Source FFI is `iggy_source_handle_v2` (batch ID carried to the runtime callback) + `iggy_source_batch_result` (plugin-exported ACK/NACK, #3855).
 - Changing the runtime's wire conventions (postcard FFI payload structs, default consumer group naming, plugin path resolution).
 - Modifying `runtime/src/state.rs` save protocol (atomic rename + fsync ordering) - corruption risk.
 - Renaming or repurposing a `Schema` variant - decoders/encoders pinned to wire bytes.
@@ -42,14 +42,17 @@ Both compile as `cdylib` shared libraries (`.so`/`.dylib`/`.dll`) loaded by the 
 ```text
                       ┌─ optional transforms ─┐
 External  ──poll──▶  SOURCE  ──FFI──▶  RUNTIME  ──encode──▶  Apache Iggy stream
-   system    plugin            ▲                    ▲
-                               │                    │
-                       state save (msgpack)         │
-                                                    │
-                       ┌─ optional transforms ─┐    │
+   system    plugin    ▲                    ▲
+                       │                    │
+              Ack/Nack (on_batch_result)     │
+                       │            state save (msgpack)
+                       └────────────────────┘
+                       ┌─ optional transforms ─┐
 Apache Iggy stream  ──decode──▶  RUNTIME  ──FFI──▶  SINK  ──write──▶ External
                                               plugin                   system
 ```
+
+Source is a request/response FFI, not fire-and-forget: after the runtime sends the batch and saves the state `poll()` staged, it reports `SourceBatchResult::Ack` or `::Nack` back to the plugin via `iggy_source_batch_result` (#3855) before calling `poll()` again. See [connector-source](../connector-source/SKILL.md#state-persistence-stage-in-poll-commit-in-on_batch_result) for the full handshake.
 
 Headers set on the source side ride through transforms (which may modify, drop, or pass them) and arrive at the sink with `BTreeMap<HeaderKey, HeaderValue>` preserved deterministically.
 
@@ -63,6 +66,7 @@ Headers set on the source side ride through transforms (which may modify, drop, 
 | Change runtime internals (FFI, manager, state, ...) | `connector-runtime`   |
 | Add a transform (field-level or format conversion)  | `connector-transform` |
 | Write unit / integration tests for any of the above | `connector-testing`   |
+| Review a sink/source PR / pre-flight before `/ready` | `connector-pr-review` |
 
 ## Stick to conventions
 
@@ -165,7 +169,7 @@ JSON log format, parser unit tests).
 | Real-infra sink + integration tests                       | `sinks/postgres_sink/` + `integration/tests/connectors/postgres/postgres_sink.rs`       |
 | Feature-rich sink config (validation, batch modes, retry) | `sinks/http_sink/`                                                                      |
 | Atomic counters on hot path                               | `sinks/mongodb_sink/`                                                                   |
-| Simplest source (4 canonical state tests)                 | `sources/random_source/`                                                                |
+| Simplest source (6 canonical state + ACK/NACK tests)       | `sources/random_source/`                                                                |
 | Real-infra source                                         | `sources/postgres_source/` + `integration/tests/connectors/postgres/postgres_source.rs` |
 
 Read the relevant exemplar end-to-end before writing or modifying a connector.
@@ -206,13 +210,21 @@ Each implemented in at least one in-tree plugin or runtime path.
 - `&mut self` on `Sink::consume` or `Source::poll` impls - won't compile, flag any creative workaround.
 - `std::sync::Mutex` held across `.await` - swap for `tokio::sync::Mutex`.
 - Missing `[lib] crate-type = ["cdylib", "lib"]` in plugin `Cargo.toml`.
-- Source plugin without the four canonical state tests (see `connector-testing`).
+- Source plugin without the four canonical state tests, or without ACK/NACK tests when `on_batch_result` is overridden (see `connector-testing`).
+- Source `poll()` committing a cursor or destructive work directly instead of staging it for `on_batch_result` to commit on `Ack` / discard on `Nack`.
 - New silent message drop without a metric increment.
 - Wrapping `format!()` around args passed to `error!`/`warn!`/`info!`/`debug!` - eager `format!` allocates even when level filters the line out. Pass args directly: `error!("foo: {x}")` or `error!(error = %x, "foo")`.
 - Logging a connection string, API key, or token.
 - Plain `String` for a credential field - use `SecretString`.
 - `tokio::spawn` inside plugin code - runtime owns lifecycle.
 - `std::time::SystemTime::now()` in transforms - non-deterministic, breaks tests.
+- Returning `Ok(())` from `consume` after a failed batch (offsets can still advance).
+- Random UUIDs as message IDs / dedup keys.
+- Classifying retryability via `err.to_string()` substring matches.
+- README defaults that disagree with code consts.
+- Invented config knob names (`request_timeout`, `retry_max_delay`) instead of the canon in `connector-pr-review`.
+
+For the full PR review checklist (blockers, delivery-semantics paragraph, pre-flight paste), load [connector-pr-review](../connector-pr-review/SKILL.md).
 
 ## File map
 

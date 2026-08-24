@@ -28,11 +28,17 @@ Copy the closest existing plugin by shape:
 | Polling DB source | `core/connectors/sources/postgres_source` |
 | Minimal source + state tests | `core/connectors/sources/random_source` |
 | Minimal sink | `core/connectors/sinks/stdout_sink` |
+| Fill-in-the-blank sink | `core/connectors/sinks/sink_template` |
+| Fill-in-the-blank source | `core/connectors/sources/source_template` |
 
-Or start from the fill-in-the-blank kits in the skills `TEMPLATE.md`
-files. Those kits already include config parsing, `SecretString`,
-retry loops, `last_err` batch handling, sleep-first poll, lock
-discipline, and unit-test stubs.
+`sink_template` / `source_template` are compiling, tested starting
+points: config parsing, `SecretString`, retry loops, circuit breaker,
+`last_err` batch handling (sink), ACK/NACK cursor staging (source),
+sleep-first poll, lock discipline, and unit-test stubs are already
+wired up. Copy the crate, rename the package, and fill in the
+`TODO(Developer)` spots in `src/lib.rs` — see each crate's `README.md`.
+The skills' `TEMPLATE.md` files describe the same pattern in prose, for
+when copying a whole crate is more than you need.
 
 **Your implementation surface is intentionally small:**
 

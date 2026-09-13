@@ -61,7 +61,8 @@ See [docs/SCOPE.md](docs/SCOPE.md) for [#3421](https://github.com/apache/iggy/is
 ## Iggy bridge ([#3533](https://github.com/apache/iggy/issues/3533))
 
 `src/bridge/` is the SDK integration layer: connects to Iggy, maps Kafka topics to Iggy
-streams/topics, provisions them on demand, and looks up the high watermark for `ListOffsets`.
+streams/topics, provisions them on demand, and looks up high watermarks (one or many partitions of
+a topic per call) for `ListOffsets`.
 **Not wired into the live Produce/Fetch dispatch path yet** - that lands with
 [#3535](https://github.com/apache/iggy/issues/3535)/[#3536](https://github.com/apache/iggy/issues/3536).
 Exercised today by `bridge`'s own unit tests and `tests/bridge_iggy_integration_tests.rs` (spawns a
@@ -77,11 +78,16 @@ real `iggy-server`).
 | `IGGY_KAFKA_IGGY_STREAM` | `kafka` | Default Iggy stream for a Kafka topic with no explicit mapping override |
 | `IGGY_KAFKA_TOPIC_MAP_PATH` | unset | Path to a topic-mapping TOML file (see below); omit to use only the default rule |
 
-The connection retries a fixed, bounded number of times (`RECONNECTION_RETRIES`, not the Iggy SDK
-client's own default of unlimited retries, one dial per second, forever), and the whole connect
-attempt - retries included - is capped at `CONNECT_TIMEOUT` (15s) wall-clock, so a bridge call
+The initial connect retries a fixed, bounded number of times (`RECONNECTION_RETRIES = 3`, not the
+Iggy SDK client's own default of unlimited retries, one dial per second, forever), and the whole
+attempt - retries included - is capped at `CONNECT_TIMEOUT` (15s) wall-clock, so `IggyBridge::connect`
 fails in bounded time whether the address refuses the connection or silently drops it, instead of
-blocking the calling task indefinitely. See `IggyBridge::connect`'s doc comment.
+blocking the calling task indefinitely. Every other bridge call (`ensure_stream_and_topic`,
+`high_watermark(s)`, `close`) carries its own `REQUEST_TIMEOUT` (same 15s bound) for the same
+reason: the SDK reconnects internally, mid-call, on a transport error, through the same
+undead-lined dial path - a bridge call made well after the initial connect can still hit this if
+Iggy becomes unreachable later. See `IggyBridge`'s own doc comment (its rustdoc is private, so
+this isn't a followable link outside the crate - read the source at `src/bridge/iggy_bridge.rs`).
 
 ### Topic mapping
 
@@ -107,6 +113,12 @@ topic = "kafka_events"
 Point `IGGY_KAFKA_TOPIC_MAP_PATH` at the file to load it; topics not listed under `[topics.*]`
 still fall back to the default rule.
 
+`default_stream` is required in a map file - it has no `#[serde(default)]`, unlike `topics` -
+so an override-only file with no `default_stream` key fails to load rather than falling back to
+`kafka`. When both `IGGY_KAFKA_TOPIC_MAP_PATH` and `IGGY_KAFKA_IGGY_STREAM` are set, the file's own
+`default_stream` always wins and the env var is ignored entirely: a TOML file is a complete mapping
+document, not an overlay on top of the env var.
+
 ### Provisioning and idempotency
 
 `ensure_stream_and_topic(kafka_topic, partition_count)` creates the mapped Iggy stream and topic
@@ -122,14 +134,43 @@ default. Nothing is bounding retention until it's configured explicitly (Iggy's 
 outside this bridge today); repointing a Kafka app that assumes bounded retention onto this bridge
 will accumulate data indefinitely unless you set that up yourself.
 
+They also use Iggy's default **durability**, `Durability::Replicated` - quorum commit without an
+additional stable-storage barrier, with the disk write itself threshold-gated (flushed at 1024
+messages or 1 MiB of unflushed data, whichever comes first). Kafka's own defaults take the same
+posture, so this isn't a wrong choice, but on a single node both can lose an acked write to a power
+cut before that threshold is reached - worth knowing rather than discovering later.
+
+### Concurrency ceiling
+
+One `IggyBridge` (one `IggyClient`) is meant to serve every Kafka connection this gateway handles,
+and the Iggy SDK's TCP transport is lockstep - one request in flight per client, its stream mutex
+held across write, flush, and read. Every concurrent Kafka connection ends up serialized behind
+whichever single Iggy request is in flight; the Kafka side's own connection limit
+(`IGGY_KAFKA_MAX_CONNECTIONS`) does nothing to relieve this. No connection pooling exists yet - it
+is a known gap to address before `#3535`/`#3536` put this on a hot path, not a design decision to
+rely on.
+
 ### Error mapping
 
-`BridgeError::to_kafka_error_code()` maps Iggy failures to Kafka wire error codes - stream/topic
-not found → `UNKNOWN_TOPIC_OR_PARTITION` (3), auth/credential failures →
-`TOPIC_AUTHORIZATION_FAILED` (29), connection-shaped failures → `NOT_LEADER_OR_FOLLOWER` (6, the
-same retriable code the foundation's own stubs send, so a client backs off and retries),
-`PartitionCountMismatch` → `TOPIC_ALREADY_EXISTS` (36, not `INVALID_PARTITIONS` - that code's own
-text is "below 1", a different condition), anything else → `UNKNOWN_SERVER_ERROR` (-1).
+`BridgeError::to_kafka_error_code()` maps Iggy failures to Kafka wire error codes:
+
+- Stream/topic/partition not found → `UNKNOWN_TOPIC_OR_PARTITION` (3)
+- A rejected *permission* (`Unauthorized`) → `TOPIC_AUTHORIZATION_FAILED` (29) - a real,
+  fixable-by-the-Kafka-operator ACL problem
+- A rejected *login* (the bridge's own `IGGY_KAFKA_IGGY_USERNAME`/`_PASSWORD` are wrong) →
+  `UNKNOWN_SERVER_ERROR` (-1), deliberately **not** 29 - the Kafka client can't fix a bridge-side
+  credential misconfiguration, and blaming its own ACLs for one is worse than an unexplained
+  fatal error
+- Connection-shaped failures → `NOT_LEADER_OR_FOLLOWER` (6, the same retriable code the
+  foundation's own stubs send, so a client backs off and retries)
+- An Iggy commit whose outcome is genuinely unknown (`TransientNotCommitted`) →
+  `REQUEST_TIMED_OUT` (7) - retriable in real Kafka too, chosen because it's what a real broker
+  sends for the same shape of failure, not to make a client stop retrying
+- An invalid Kafka-side topic name (empty, whitespace-padded, oversized, illegal characters) →
+  `INVALID_TOPIC_EXCEPTION` (17), checked before any Iggy call is made
+- `PartitionCountMismatch` → `TOPIC_ALREADY_EXISTS` (36, not `INVALID_PARTITIONS` - that code's
+  own text is "below 1", a different condition)
+- Anything else → `UNKNOWN_SERVER_ERROR` (-1)
 
 ## Wire fixture tool
 

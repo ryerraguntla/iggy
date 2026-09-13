@@ -28,6 +28,10 @@ use crate::bridge::error::BridgeError;
 /// `IggyBridge::ensure_stream`/`ensure_topic`.
 const MAX_IDENTIFIER_LEN: usize = 255;
 
+/// Kafka's own topic-name cap (`Topic.MAX_NAME_LENGTH` in Kafka's own source) - smaller than
+/// [`MAX_IDENTIFIER_LEN`], so a Kafka-side name needs its own limit, not Iggy's.
+const MAX_KAFKA_TOPIC_NAME_LEN: usize = 249;
+
 /// Rejects an empty name, one with leading/trailing whitespace, or one over
 /// [`MAX_IDENTIFIER_LEN`] bytes.
 ///
@@ -37,7 +41,9 @@ const MAX_IDENTIFIER_LEN: usize = 255;
 ///
 /// `pub(crate)`: also used by `bridge::config` for `IGGY_KAFKA_IGGY_STREAM`, which feeds
 /// `default_stream` through the same no-file path this module's own validation covers on the
-/// TOML-file path.
+/// TOML-file path. For a Kafka-side topic name (a TOML key, or a `kafka_topic` argument), use
+/// [`validate_kafka_topic_name`] instead - Kafka's own limits and legal characters differ from
+/// Iggy's.
 pub(crate) fn validate_identifier_name(field: &str, value: &str) -> Result<(), BridgeError> {
     if value.is_empty() {
         return Err(BridgeError::InvalidConfig(format!(
@@ -59,6 +65,58 @@ pub(crate) fn validate_identifier_name(field: &str, value: &str) -> Result<(), B
     Ok(())
 }
 
+/// Rejects a Kafka topic name that fails Kafka's own naming rules: empty, leading/trailing
+/// whitespace, over [`MAX_KAFKA_TOPIC_NAME_LEN`] bytes, or containing a byte outside
+/// `[A-Za-z0-9._-]` (Kafka's own `Topic.legalChars`).
+///
+/// Used both for TOML mapping-file keys (`from_toml_str`) and for the `kafka_topic` argument
+/// `IggyBridge::ensure_stream_and_topic`/`high_watermark` take directly - the two paths must agree,
+/// or a name the config file would reject can still reach Iggy unvalidated through the second
+/// path. A whitespace-padded key is the sharpest failure mode this catches: `resolve`'s lookup is
+/// an exact `HashMap::get`, so a padded key parses out of the TOML file cleanly and then matches
+/// nothing at runtime, silently falling through to the default stream instead of erroring - the
+/// one place in this module that would otherwise fail silently instead of loudly.
+///
+/// `field` is `"topic mapping key"` or `"kafka_topic"` in current callers, not a generic template -
+/// kept as a parameter (like [`validate_identifier_name`]) so the message names the actual site.
+pub(crate) fn validate_kafka_topic_name(field: &str, value: &str) -> Result<(), BridgeError> {
+    if value.is_empty() {
+        return Err(BridgeError::InvalidKafkaTopicName {
+            kafka_topic: value.to_string(),
+            reason: format!("{field} must not be empty"),
+        });
+    }
+    if value.trim() != value {
+        return Err(BridgeError::InvalidKafkaTopicName {
+            kafka_topic: value.to_string(),
+            reason: format!("{field} must not have leading or trailing whitespace"),
+        });
+    }
+    if value.len() > MAX_KAFKA_TOPIC_NAME_LEN {
+        return Err(BridgeError::InvalidKafkaTopicName {
+            kafka_topic: value.to_string(),
+            reason: format!(
+                "{field} is {} bytes, over Kafka's {MAX_KAFKA_TOPIC_NAME_LEN}-byte topic name limit",
+                value.len()
+            ),
+        });
+    }
+    if let Some(illegal) = value
+        .bytes()
+        .find(|b| !(b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')))
+    {
+        return Err(BridgeError::InvalidKafkaTopicName {
+            kafka_topic: value.to_string(),
+            reason: format!(
+                "{field} contains {:?}, outside Kafka's legal topic-name characters \
+                 (letters, digits, '.', '_', '-')",
+                illegal as char
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Explicit Kafka-topic → Iggy stream/topic override. Absent entries fall back to
 /// [`TopicMapping::default_stream`] plus the Kafka topic name unchanged - see
 /// [`TopicMapping::resolve`].
@@ -69,64 +127,65 @@ pub struct TopicOverride {
     pub topic: String,
 }
 
-/// Kafka topic name → Iggy stream/topic mapping, loaded from TOML.
+/// Kafka topic name → Iggy stream/topic mapping.
 ///
 /// Default rule (no override): the Iggy stream is [`default_stream`](Self::default_stream) and
 /// the Iggy topic name is the Kafka topic name unchanged. A gateway that fronts a single Kafka
 /// "cluster" for one Iggy stream never needs an override entry at all.
 ///
-/// No `Default` impl: an empty `default_stream` is not a valid `TopicMapping` -
-/// [`from_toml_str`](Self::from_toml_str) rejects it, and a derived `Default` would silently
-/// produce exactly that.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+/// Fields are private and every value is validated (empty/whitespace/length/injectivity - see
+/// [`new`](Self::new)) on the only two ways to build one: [`new`](Self::new) and
+/// [`from_toml_str`](Self::from_toml_str) (which deserializes into a private, unchecked
+/// [`RawTopicMapping`] first, then calls `new`). Public fields plus `#[derive(Deserialize)]`
+/// directly on this type would let any caller construct or mutate one straight from TOML or a
+/// literal, skipping every check below - which is exactly what happened before this type had a
+/// checked constructor: `bridge::config`'s no-file path built one by hand and needed its own
+/// separate validation call to make up for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopicMapping {
-    pub default_stream: String,
+    default_stream: String,
+    topics: HashMap<String, TopicOverride>,
+}
+
+/// Unchecked shadow of [`TopicMapping`], `Deserialize`'s only target - never constructed by hand,
+/// never exposed. `TopicMapping::from_toml_str` is the sole path from TOML to a validated
+/// `TopicMapping`, by deserializing into this first and then calling
+/// [`TopicMapping::new`](TopicMapping::new).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTopicMapping {
+    default_stream: String,
     #[serde(default)]
-    pub topics: HashMap<String, TopicOverride>,
+    topics: HashMap<String, TopicOverride>,
 }
 
 impl TopicMapping {
-    /// Resolves a Kafka topic name to `(iggy_stream, iggy_topic)`.
-    ///
-    /// Not injective: two distinct Kafka topics can resolve to the same Iggy stream/topic pair,
-    /// merging their messages. `from_toml_str` rejects the checkable cases (two overrides sharing
-    /// a target, or an override's target aliasing the default-path resolution of its own topic
-    /// name) at config load, but the space of *unlisted* Kafka topic names is unbounded, so a
-    /// collision against one that never gets an override entry can't be ruled out ahead of time.
-    #[must_use]
-    pub fn resolve(&self, kafka_topic: &str) -> (String, String) {
-        self.topics.get(kafka_topic).map_or_else(
-            || (self.default_stream.clone(), kafka_topic.to_string()),
-            |over| (over.stream.clone(), over.topic.clone()),
-        )
-    }
-
-    /// Parses a `TopicMapping` from a TOML document.
+    /// Builds a validated `TopicMapping` from already-parsed parts - the checked constructor the
+    /// no-file `IGGY_KAFKA_IGGY_STREAM` path in `bridge::config` uses, and the sole validation
+    /// gate `from_toml_str` also funnels through.
     ///
     /// # Errors
     ///
-    /// Returns [`BridgeError::InvalidConfig`] if `raw` is not valid TOML for this shape (an
-    /// unrecognized field - e.g. a `[topic.x]` typo for `[topics.x]` - is rejected here rather
-    /// than silently parsing to an empty override map), if `default_stream` or any override's
-    /// `stream`/`topic` is empty, has leading/trailing whitespace, or exceeds
-    /// `MAX_IDENTIFIER_LEN`, or if two override entries are not injective (see
-    /// [`resolve`](Self::resolve)) - in every validation case, letting it through here would
-    /// otherwise fail much later, deep in `IggyBridge::ensure_stream`/`ensure_topic`, with no link
-    /// back to the config entry at fault.
-    pub fn from_toml_str(raw: &str) -> Result<Self, BridgeError> {
-        let mapping: Self = toml::from_str(raw)
-            .map_err(|e| BridgeError::InvalidConfig(format!("invalid topic mapping TOML: {e}")))?;
-        validate_identifier_name("topic mapping's default_stream", &mapping.default_stream)?;
+    /// Returns [`BridgeError::InvalidConfig`] if `default_stream` or any override's `stream`/
+    /// `topic` is empty, has leading/trailing whitespace, or exceeds `MAX_IDENTIFIER_LEN`; if any
+    /// override key fails Kafka's own topic-naming rules (see
+    /// [`validate_kafka_topic_name`]); or if two override entries are not injective (see
+    /// [`resolve`](Self::resolve)).
+    pub fn new(
+        default_stream: String,
+        topics: HashMap<String, TopicOverride>,
+    ) -> Result<Self, BridgeError> {
+        validate_identifier_name("topic mapping's default_stream", &default_stream)?;
 
-        let mut targets = HashSet::with_capacity(mapping.topics.len());
-        for (kafka_topic, over) in &mapping.topics {
+        let mut targets = HashSet::with_capacity(topics.len());
+        for (kafka_topic, over) in &topics {
+            validate_kafka_topic_name("topic mapping key", kafka_topic)?;
             validate_identifier_name(
-                &format!("topic mapping override for '{kafka_topic}''s stream"),
+                &format!("topic mapping override for '{kafka_topic}': its stream"),
                 &over.stream,
             )?;
             validate_identifier_name(
-                &format!("topic mapping override for '{kafka_topic}''s topic"),
+                &format!("topic mapping override for '{kafka_topic}': its topic"),
                 &over.topic,
             )?;
 
@@ -144,7 +203,7 @@ impl TopicMapping {
             // override targets, if the target stream is also the default one. Only the aliasing
             // direction that maps to the *default* stream is checkable at load time; an override
             // targeting some other, non-default stream can't collide with the default path.
-            if over.stream == mapping.default_stream && !mapping.topics.contains_key(&over.topic) {
+            if over.stream == default_stream && !topics.contains_key(&over.topic) {
                 return Err(BridgeError::InvalidConfig(format!(
                     "topic mapping override for '{kafka_topic}' targets Iggy stream '{}' topic \
                      '{}', which is also where an unmapped Kafka topic literally named '{}' \
@@ -155,7 +214,47 @@ impl TopicMapping {
                 )));
             }
         }
-        Ok(mapping)
+        Ok(Self {
+            default_stream,
+            topics,
+        })
+    }
+
+    /// The Iggy stream a Kafka topic with no explicit override resolves to.
+    #[must_use]
+    pub fn default_stream(&self) -> &str {
+        &self.default_stream
+    }
+
+    /// Resolves a Kafka topic name to `(iggy_stream, iggy_topic)`.
+    ///
+    /// Not injective: two distinct Kafka topics can resolve to the same Iggy stream/topic pair,
+    /// merging their messages. `new` rejects the checkable cases (two overrides sharing a target,
+    /// or an override's target aliasing the default-path resolution of its own topic name) at
+    /// config load, but the space of *unlisted* Kafka topic names is unbounded, so a collision
+    /// against one that never gets an override entry can't be ruled out ahead of time.
+    #[must_use]
+    pub fn resolve<'a>(&'a self, kafka_topic: &'a str) -> (&'a str, &'a str) {
+        self.topics.get(kafka_topic).map_or_else(
+            || (self.default_stream.as_str(), kafka_topic),
+            |over| (over.stream.as_str(), over.topic.as_str()),
+        )
+    }
+
+    /// Parses a `TopicMapping` from a TOML document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BridgeError::InvalidConfig`] if `raw` is not valid TOML for this shape (an
+    /// unrecognized field - e.g. a `[topic.x]` typo for `[topics.x]` - is rejected here rather
+    /// than silently parsing to an empty override map), or on the same conditions as
+    /// [`new`](Self::new) - in every validation case, letting it through here would otherwise
+    /// fail much later, deep in `IggyBridge::ensure_stream`/`ensure_topic`, with no link back to
+    /// the config entry at fault.
+    pub fn from_toml_str(raw: &str) -> Result<Self, BridgeError> {
+        let raw_mapping: RawTopicMapping = toml::from_str(raw)
+            .map_err(|e| BridgeError::InvalidConfig(format!("invalid topic mapping TOML: {e}")))?;
+        Self::new(raw_mapping.default_stream, raw_mapping.topics)
     }
 
     /// Reads and parses a `TopicMapping` TOML file.
@@ -179,16 +278,15 @@ impl TopicMapping {
 mod tests {
     use super::*;
 
+    fn mapping_with(default_stream: &str, topics: HashMap<String, TopicOverride>) -> TopicMapping {
+        TopicMapping::new(default_stream.to_string(), topics)
+            .expect("valid mapping for this test's fixture data")
+    }
+
     #[test]
     fn given_no_override_should_resolve_to_default_stream_and_same_topic_name() {
-        let mapping = TopicMapping {
-            default_stream: "kafka".to_string(),
-            topics: HashMap::new(),
-        };
-        assert_eq!(
-            mapping.resolve("orders"),
-            ("kafka".to_string(), "orders".to_string())
-        );
+        let mapping = mapping_with("kafka", HashMap::new());
+        assert_eq!(mapping.resolve("orders"), ("kafka", "orders"));
     }
 
     #[test]
@@ -201,18 +299,9 @@ mod tests {
                 topic: "orders_v2".to_string(),
             },
         );
-        let mapping = TopicMapping {
-            default_stream: "kafka".to_string(),
-            topics,
-        };
-        assert_eq!(
-            mapping.resolve("orders"),
-            ("billing".to_string(), "orders_v2".to_string())
-        );
-        assert_eq!(
-            mapping.resolve("payments"),
-            ("kafka".to_string(), "payments".to_string())
-        );
+        let mapping = mapping_with("kafka", topics);
+        assert_eq!(mapping.resolve("orders"), ("billing", "orders_v2"));
+        assert_eq!(mapping.resolve("payments"), ("kafka", "payments"));
     }
 
     #[test]
@@ -225,11 +314,8 @@ mod tests {
             topic = "orders_v2"
         "#;
         let mapping = TopicMapping::from_toml_str(toml).unwrap();
-        assert_eq!(mapping.default_stream, "kafka");
-        assert_eq!(
-            mapping.resolve("orders"),
-            ("billing".to_string(), "orders_v2".to_string())
-        );
+        assert_eq!(mapping.default_stream(), "kafka");
+        assert_eq!(mapping.resolve("orders"), ("billing", "orders_v2"));
     }
 
     #[test]
@@ -353,5 +439,88 @@ mod tests {
             topic = "orders_v2"
         "#;
         TopicMapping::from_toml_str(toml).expect("non-default-stream target is not an alias risk");
+    }
+
+    #[test]
+    fn new_rejects_empty_default_stream() {
+        // The bypass this closes: bridge::config's no-file path (and anyone else) used to be
+        // able to hand-build a TopicMapping struct literal, skipping every check from_toml_str
+        // ran. new() is now the only way in, TOML or not.
+        let err = TopicMapping::new(String::new(), HashMap::new()).unwrap_err();
+        assert!(matches!(err, BridgeError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn new_rejects_a_padded_override_target_stream() {
+        let mut topics = HashMap::new();
+        topics.insert(
+            "orders".to_string(),
+            TopicOverride {
+                stream: " billing".to_string(),
+                topic: "orders_v2".to_string(),
+            },
+        );
+        let err = TopicMapping::new("kafka".to_string(), topics).unwrap_err();
+        assert!(matches!(err, BridgeError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn from_toml_str_rejects_a_whitespace_padded_topic_mapping_key() {
+        // The one silent-failure case this whole module exists to close: without key
+        // validation, " orders " parses out of the TOML cleanly, then never matches
+        // resolve()'s exact HashMap::get for the real Kafka topic "orders" - it just silently
+        // falls through to the default stream instead of erroring.
+        let toml = r#"
+            default_stream = "kafka"
+
+            [topics." orders "]
+            stream = "billing"
+            topic = "orders_v2"
+        "#;
+        let err = TopicMapping::from_toml_str(toml).unwrap_err();
+        assert!(matches!(err, BridgeError::InvalidKafkaTopicName { .. }));
+    }
+
+    #[test]
+    fn from_toml_str_rejects_an_empty_topic_mapping_key() {
+        let toml = r#"
+            default_stream = "kafka"
+
+            [topics.""]
+            stream = "billing"
+            topic = "orders_v2"
+        "#;
+        let err = TopicMapping::from_toml_str(toml).unwrap_err();
+        assert!(matches!(err, BridgeError::InvalidKafkaTopicName { .. }));
+    }
+
+    #[test]
+    fn from_toml_str_rejects_a_topic_mapping_key_over_kafkas_length_limit() {
+        let toml = format!(
+            "default_stream = \"kafka\"\n\n[topics.{:?}]\nstream = \"billing\"\ntopic = \"orders_v2\"\n",
+            "a".repeat(MAX_KAFKA_TOPIC_NAME_LEN + 1)
+        );
+        let err = TopicMapping::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(err, BridgeError::InvalidKafkaTopicName { .. }));
+    }
+
+    #[test]
+    fn from_toml_str_rejects_a_topic_mapping_key_with_an_illegal_character() {
+        // Kafka's own legal-character set has no '/' in it - a topic named this could never be
+        // sent by a real Kafka client, so an override entry for it can never fire either.
+        let toml = r#"
+            default_stream = "kafka"
+
+            [topics."orders/2024"]
+            stream = "billing"
+            topic = "orders_v2"
+        "#;
+        let err = TopicMapping::from_toml_str(toml).unwrap_err();
+        assert!(matches!(err, BridgeError::InvalidKafkaTopicName { .. }));
+    }
+
+    #[test]
+    fn validate_kafka_topic_name_accepts_every_legal_character_class() {
+        validate_kafka_topic_name("kafka_topic", "Order.Events_2024-v2").unwrap();
     }
 }

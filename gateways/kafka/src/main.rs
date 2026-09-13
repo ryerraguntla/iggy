@@ -226,16 +226,20 @@ mod tests {
 
     use super::{parse_positive, reject_unknown_kafka_env_vars};
 
-    /// Sequential (not two separate `#[test]` fns), and `#[serial]` (unkeyed - the whole binary's
-    /// default group, shared with `bridge::config`'s and `server`'s env-touching tests).
+    /// Sequential (not two separate `#[test]` fns), and `#[serial]` (unkeyed - this binary's
+    /// default group). This is the only `#[serial]` test compiled into *this* binary
+    /// (`main.rs` -> the `iggy-gateway-kafka` bin's own test harness) - `bridge::config`'s and
+    /// `server`'s env-touching tests compile into the separate lib test binary, and
+    /// `serial_test`'s mutex is process-local, so it does not (and does not need to) coordinate
+    /// with either of those; `server.rs`'s own `#[serial]` test makes the mirror-image note.
     ///
     /// # Safety
     /// Edition 2024's `env::set_var`/`remove_var` are unsound against *any* concurrent env read
-    /// or write on another thread, not merely one touching this same key - env vars are
-    /// process-wide C `environ` state, and the race is at that level. `#[serial]` is what makes
-    /// this sound, by excluding every other `#[serial]`-tagged test in this binary while this one
-    /// runs; being single-threaded within this function is necessary but not sufficient on its
-    /// own.
+    /// or write on another thread in this process, not merely one touching this same key - env
+    /// vars are process-wide C `environ` state, and the race is at that level. `#[serial]` is what
+    /// makes this sound, by excluding every other `#[serial]`-tagged test in this binary while
+    /// this one runs; being single-threaded within this function is necessary but not sufficient
+    /// on its own.
     #[test]
     #[serial]
     fn reject_unknown_kafka_env_vars_flags_typo_but_accepts_known_keys() {

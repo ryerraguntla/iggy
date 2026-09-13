@@ -19,8 +19,9 @@ use iggy::prelude::IggyError;
 use thiserror::Error;
 
 use crate::protocol::api::{
-    ERROR_NOT_LEADER_OR_FOLLOWER, ERROR_REQUEST_TIMED_OUT, ERROR_TOPIC_ALREADY_EXISTS,
-    ERROR_TOPIC_AUTHORIZATION_FAILED, ERROR_UNKNOWN_SERVER_ERROR, ERROR_UNKNOWN_TOPIC_OR_PARTITION,
+    ERROR_INVALID_PARTITIONS, ERROR_INVALID_TOPIC_EXCEPTION, ERROR_NOT_LEADER_OR_FOLLOWER,
+    ERROR_REQUEST_TIMED_OUT, ERROR_TOPIC_ALREADY_EXISTS, ERROR_TOPIC_AUTHORIZATION_FAILED,
+    ERROR_UNKNOWN_SERVER_ERROR, ERROR_UNKNOWN_TOPIC_OR_PARTITION,
 };
 
 /// Errors from the `IggyBridge`: connection lifecycle, config, and Iggy SDK calls.
@@ -66,6 +67,12 @@ pub enum BridgeError {
         existing: u32,
         requested: u32,
     },
+    /// A Kafka-side topic name failed Kafka's own naming rules (empty, whitespace-padded, over
+    /// 249 bytes, or outside `[A-Za-z0-9._-]`) before any Iggy call was made. A conformant Kafka
+    /// client library validates topic names before sending them, so this is defense against a
+    /// raw or non-conformant client, not an expected path.
+    #[error("invalid Kafka topic name '{kafka_topic}': {reason}")]
+    InvalidKafkaTopicName { kafka_topic: String, reason: String },
 }
 
 impl BridgeError {
@@ -82,6 +89,7 @@ impl BridgeError {
             Self::Iggy(err) => iggy_error_to_kafka_code(err),
             Self::PartitionOutOfRange { .. } => ERROR_UNKNOWN_TOPIC_OR_PARTITION,
             Self::PartitionCountMismatch { .. } => ERROR_TOPIC_ALREADY_EXISTS,
+            Self::InvalidKafkaTopicName { .. } => ERROR_INVALID_TOPIC_EXCEPTION,
             // Not a wire-response case in practice: an invalid bridge config is caught at
             // `IggyBridge::connect` before any handler exists to answer a Kafka request, so this
             // is reachable only if a future caller starts constructing configs at request time.
@@ -108,16 +116,28 @@ impl BridgeError {
 /// than known-safe-to-retry, so it maps to `REQUEST_TIMED_OUT` instead of
 /// `NOT_LEADER_OR_FOLLOWER` - a caller must not treat it as an ordinary retriable failure and risk
 /// a duplicate write.
+///
+/// `Unauthorized` is the only one of the four credential-shaped variants that stays on
+/// `TOPIC_AUTHORIZATION_FAILED` (29): it means the authenticated user lacks a permission, which is
+/// a real, fixable-by-the-Kafka-operator ACL problem. `InvalidCredentials`/`InvalidUsername`/
+/// `InvalidPassword` mean the *bridge's own* `IGGY_KAFKA_IGGY_USERNAME`/`_PASSWORD` are wrong
+/// (`tcp_client.rs`'s own sign-in path raises exactly these for a rejected login, with the comment
+/// "the caller's to fix" - meaning the gateway operator, not the Kafka client). Sending 29 for
+/// these blames the Kafka client's own ACLs for a problem it cannot see or fix, and it is not
+/// startup-only: the SDK re-runs sign-in on every reconnect (`tcp_client.rs`), so a since-rotated
+/// bridge password surfaces this mid-request, not just at boot. They fall to
+/// `UNKNOWN_SERVER_ERROR` instead - correctly fatal (retrying won't fix a wrong password), but
+/// without asserting a cause the Kafka client cannot act on. A handler wiring this in
+/// (`#3535`/`#3536`) should log the real `IggyError` at `error!` level server-side, since the
+/// Kafka client will never see more than "-1" for it.
 const fn iggy_error_to_kafka_code(err: &IggyError) -> i16 {
     match err {
         IggyError::StreamIdNotFound(_)
         | IggyError::StreamNameNotFound(_)
         | IggyError::TopicIdNotFound(_, _)
-        | IggyError::TopicNameNotFound(_, _) => ERROR_UNKNOWN_TOPIC_OR_PARTITION,
-        IggyError::Unauthorized
-        | IggyError::InvalidCredentials
-        | IggyError::InvalidUsername
-        | IggyError::InvalidPassword => ERROR_TOPIC_AUTHORIZATION_FAILED,
+        | IggyError::TopicNameNotFound(_, _)
+        | IggyError::PartitionNotFound(_, _, _) => ERROR_UNKNOWN_TOPIC_OR_PARTITION,
+        IggyError::Unauthorized => ERROR_TOPIC_AUTHORIZATION_FAILED,
         IggyError::Disconnected
         | IggyError::EmptyResponse
         | IggyError::Unauthenticated
@@ -127,6 +147,7 @@ const fn iggy_error_to_kafka_code(err: &IggyError) -> i16 {
         | IggyError::TcpError
         | IggyError::TransientNotAccepted => ERROR_NOT_LEADER_OR_FOLLOWER,
         IggyError::TransientNotCommitted => ERROR_REQUEST_TIMED_OUT,
+        IggyError::TooManyPartitions => ERROR_INVALID_PARTITIONS,
         _ => ERROR_UNKNOWN_SERVER_ERROR,
     }
 }
@@ -163,6 +184,51 @@ mod tests {
         // ClientState::Connected, the ordinary window mid-reconnect before auto-sign-in lands.
         let err = BridgeError::Iggy(IggyError::Unauthenticated);
         assert_eq!(err.to_kafka_error_code(), ERROR_NOT_LEADER_OR_FOLLOWER);
+    }
+
+    #[test]
+    fn partition_not_found_maps_to_unknown_topic_or_partition() {
+        let stream_id = Identifier::numeric(1).unwrap();
+        let topic_id = Identifier::numeric(2).unwrap();
+        let err = BridgeError::Iggy(IggyError::PartitionNotFound(3, stream_id, topic_id));
+        assert_eq!(err.to_kafka_error_code(), ERROR_UNKNOWN_TOPIC_OR_PARTITION);
+    }
+
+    #[test]
+    fn too_many_partitions_maps_to_invalid_partitions() {
+        let err = BridgeError::Iggy(IggyError::TooManyPartitions);
+        assert_eq!(err.to_kafka_error_code(), ERROR_INVALID_PARTITIONS);
+    }
+
+    // The bridge's own credentials failing (a wrong IGGY_KAFKA_IGGY_USERNAME/_PASSWORD) is not
+    // the Kafka client's fault and not something it can fix - these three must NOT share
+    // Unauthorized's TOPIC_AUTHORIZATION_FAILED (29), which would blame the Kafka client's own
+    // ACLs for a bridge-side misconfiguration.
+    #[test]
+    fn invalid_credentials_maps_to_unknown_server_error_not_authorization_failed() {
+        let err = BridgeError::Iggy(IggyError::InvalidCredentials);
+        assert_eq!(err.to_kafka_error_code(), ERROR_UNKNOWN_SERVER_ERROR);
+    }
+
+    #[test]
+    fn invalid_username_maps_to_unknown_server_error_not_authorization_failed() {
+        let err = BridgeError::Iggy(IggyError::InvalidUsername);
+        assert_eq!(err.to_kafka_error_code(), ERROR_UNKNOWN_SERVER_ERROR);
+    }
+
+    #[test]
+    fn invalid_password_maps_to_unknown_server_error_not_authorization_failed() {
+        let err = BridgeError::Iggy(IggyError::InvalidPassword);
+        assert_eq!(err.to_kafka_error_code(), ERROR_UNKNOWN_SERVER_ERROR);
+    }
+
+    #[test]
+    fn invalid_kafka_topic_name_maps_to_invalid_topic_exception() {
+        let err = BridgeError::InvalidKafkaTopicName {
+            kafka_topic: " orders ".to_string(),
+            reason: "must not have leading or trailing whitespace".to_string(),
+        };
+        assert_eq!(err.to_kafka_error_code(), ERROR_INVALID_TOPIC_EXCEPTION);
     }
 
     #[test]
@@ -253,5 +319,51 @@ mod tests {
             requested: 5,
         };
         assert_eq!(err.to_kafka_error_code(), ERROR_TOPIC_ALREADY_EXISTS);
+    }
+
+    /// Every `ERROR_*` constant this module sends, checked against `kafka-protocol`'s own
+    /// `ResponseError` table - the crate's canonical copy of Kafka's real wire numbers, not this
+    /// module's own. Every other test above pins routing (which `IggyError` maps to which
+    /// constant); without this, a wrong constant value would still pass all of them, since they
+    /// only ever compare against the same constants the function returns.
+    #[test]
+    fn every_sent_error_code_matches_kafka_protocols_own_table() {
+        use kafka_protocol::error::ResponseError;
+
+        for (ours, theirs) in [
+            (
+                ERROR_UNKNOWN_SERVER_ERROR,
+                ResponseError::UnknownServerError,
+            ),
+            (
+                ERROR_UNKNOWN_TOPIC_OR_PARTITION,
+                ResponseError::UnknownTopicOrPartition,
+            ),
+            (
+                ERROR_NOT_LEADER_OR_FOLLOWER,
+                ResponseError::NotLeaderOrFollower,
+            ),
+            (ERROR_REQUEST_TIMED_OUT, ResponseError::RequestTimedOut),
+            (
+                ERROR_INVALID_TOPIC_EXCEPTION,
+                ResponseError::InvalidTopicException,
+            ),
+            (
+                ERROR_TOPIC_AUTHORIZATION_FAILED,
+                ResponseError::TopicAuthorizationFailed,
+            ),
+            (
+                ERROR_TOPIC_ALREADY_EXISTS,
+                ResponseError::TopicAlreadyExists,
+            ),
+            (ERROR_INVALID_PARTITIONS, ResponseError::InvalidPartitions),
+        ] {
+            assert_eq!(
+                ours,
+                theirs.code(),
+                "{theirs:?} is {} in kafka-protocol, not {ours}",
+                theirs.code()
+            );
+        }
     }
 }

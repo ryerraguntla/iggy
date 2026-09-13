@@ -44,10 +44,14 @@ pub struct IggyBridgeConfig {
 }
 
 impl IggyBridgeConfig {
-    /// The complete set of `IGGY_KAFKA_*` vars this module reads. Mirrors `main.rs`'s
-    /// `KNOWN_KAFKA_ENV_VARS` guard - add new vars to both, or a typo silently no-ops instead of
-    /// surfacing (`IGGY_KAFKA_` is a `DELEGATED_ENV_VAR_PREFIXES` entry in `core/configs`, so the
-    /// central provider's own typo-detection doesn't cover this namespace either).
+    /// The complete set of `IGGY_KAFKA_*` vars this module reads. `main.rs`'s
+    /// `reject_unknown_kafka_env_vars` checks this list *and* its own separate
+    /// `KNOWN_KAFKA_ENV_VARS`, not one merged copy - a var added only here is already
+    /// recognized there with no corresponding edit needed, and vice versa. A var this module
+    /// reads still has to be listed *somewhere* the guard checks, or a typo silently no-ops
+    /// instead of surfacing (`IGGY_KAFKA_` is a `DELEGATED_ENV_VAR_PREFIXES` entry in
+    /// `core/configs`, so the central provider's own typo-detection doesn't cover this namespace
+    /// either).
     pub const KNOWN_ENV_VARS: &'static [&'static str] = &[
         "IGGY_KAFKA_IGGY_ADDR",
         "IGGY_KAFKA_IGGY_USERNAME",
@@ -76,13 +80,22 @@ impl IggyBridgeConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`BridgeError::InvalidConfig`] if `IGGY_KAFKA_IGGY_PASSWORD` is unset, or if
-    /// `IGGY_KAFKA_TOPIC_MAP_PATH` is set but the file is missing or fails to parse.
+    /// Returns [`BridgeError::InvalidConfig`] if `IGGY_KAFKA_IGGY_PASSWORD` is unset or empty, if
+    /// `IGGY_KAFKA_IGGY_USERNAME` is set but empty, or if `IGGY_KAFKA_TOPIC_MAP_PATH` is set but
+    /// the file is missing or fails to parse.
     pub fn from_env() -> Result<Self, BridgeError> {
         let address =
             std::env::var("IGGY_KAFKA_IGGY_ADDR").unwrap_or_else(|_| DEFAULT_IGGY_ADDR.to_string());
         let username = std::env::var("IGGY_KAFKA_IGGY_USERNAME")
             .unwrap_or_else(|_| DEFAULT_IGGY_USERNAME.to_string());
+        // set-but-empty (`VAR=""`) is `Ok("")` from `env::var`, not `Err` - distinct from unset,
+        // and unchecked here would otherwise pass both cleanly through to a login attempt neither
+        // could ever satisfy.
+        if username.is_empty() {
+            return Err(BridgeError::InvalidConfig(
+                "IGGY_KAFKA_IGGY_USERNAME must not be empty".to_string(),
+            ));
+        }
         let password = std::env::var("IGGY_KAFKA_IGGY_PASSWORD").map_err(|_| {
             BridgeError::InvalidConfig(
                 "IGGY_KAFKA_IGGY_PASSWORD must be set - iggy-server generates a random root \
@@ -91,14 +104,17 @@ impl IggyBridgeConfig {
                     .to_string(),
             )
         })?;
+        if password.is_empty() {
+            return Err(BridgeError::InvalidConfig(
+                "IGGY_KAFKA_IGGY_PASSWORD must not be empty".to_string(),
+            ));
+        }
         let stream_env = std::env::var("IGGY_KAFKA_IGGY_STREAM").ok();
-        // Caught here, not left to TopicMapping::from_toml_str's own validation: that only runs
-        // when IGGY_KAFKA_TOPIC_MAP_PATH is set, since the no-file branch below builds a
-        // TopicMapping directly rather than through the validating constructor. An invalid
-        // (empty, whitespace-padded, or oversized) IGGY_KAFKA_IGGY_STREAM would otherwise pass
-        // from_env cleanly and only fail much later, deep in the first ensure_stream_and_topic
-        // call, as an opaque Identifier::named error - or, for whitespace, not fail at all and
-        // silently create a stream named e.g. " kafka ".
+        // TopicMapping::new (below, on the no-file branch) validates default_stream too now, so
+        // removing this check wouldn't let an invalid value through uncaught - but its own message
+        // would say "topic mapping's default_stream", not IGGY_KAFKA_IGGY_STREAM, leaving whoever
+        // reads the error to work out which env var that phrase actually refers to. Checked here
+        // first so the message names the var an operator can actually go fix.
         if let Some(ref stream) = stream_env {
             validate_identifier_name("IGGY_KAFKA_IGGY_STREAM", stream)?;
         }
@@ -114,10 +130,10 @@ impl IggyBridgeConfig {
                 }
                 TopicMapping::from_file(Path::new(&path))?
             }
-            None => TopicMapping {
-                default_stream: stream_env.unwrap_or_else(|| "kafka".to_string()),
-                topics: std::collections::HashMap::new(),
-            },
+            None => TopicMapping::new(
+                stream_env.unwrap_or_else(|| "kafka".to_string()),
+                std::collections::HashMap::new(),
+            )?,
         };
 
         Ok(Self {
@@ -140,10 +156,8 @@ mod tests {
             address: "127.0.0.1:8090".to_string(),
             username: "iggy".to_string(),
             password: SecretString::from("iggy"),
-            topic_mapping: TopicMapping {
-                default_stream: "kafka".to_string(),
-                topics: std::collections::HashMap::new(),
-            },
+            topic_mapping: TopicMapping::new("kafka".to_string(), std::collections::HashMap::new())
+                .expect("valid mapping for this test's fixture data"),
         }
     }
 
@@ -186,8 +200,13 @@ mod tests {
         let config = result.expect("valid config from documented defaults alone");
         assert_eq!(config.address, "127.0.0.1:8090");
         assert_eq!(config.username, "iggy");
-        assert_eq!(config.topic_mapping.default_stream, "kafka");
-        assert!(config.topic_mapping.topics.is_empty());
+        assert_eq!(config.topic_mapping.default_stream(), "kafka");
+        // No overrides in the no-file default: an arbitrary topic must resolve via the plain
+        // default-stream rule, not fall through to some file-loaded override.
+        assert_eq!(
+            config.topic_mapping.resolve("anything"),
+            ("kafka", "anything")
+        );
     }
 
     #[test]
@@ -202,6 +221,45 @@ mod tests {
         assert!(
             matches!(result, Err(BridgeError::InvalidConfig(_))),
             "no default password must mean no default: {result:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_rejects_empty_password() {
+        // Safety: process-wide, not per-variable - see the note on
+        // from_env_uses_documented_defaults_when_only_password_is_set above.
+        unsafe {
+            std::env::set_var("IGGY_KAFKA_IGGY_PASSWORD", "");
+        }
+        let result = IggyBridgeConfig::from_env();
+        unsafe {
+            std::env::remove_var("IGGY_KAFKA_IGGY_PASSWORD");
+        }
+        assert!(
+            matches!(result, Err(BridgeError::InvalidConfig(_))),
+            "set-but-empty (VAR=\"\") must not be treated as a usable password: {result:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_rejects_empty_username() {
+        // Safety: process-wide, not per-variable - see the note on
+        // from_env_uses_documented_defaults_when_only_password_is_set above.
+        unsafe {
+            std::env::set_var("IGGY_KAFKA_IGGY_PASSWORD", "iggy");
+            std::env::set_var("IGGY_KAFKA_IGGY_USERNAME", "");
+        }
+        let result = IggyBridgeConfig::from_env();
+        unsafe {
+            std::env::remove_var("IGGY_KAFKA_IGGY_PASSWORD");
+            std::env::remove_var("IGGY_KAFKA_IGGY_USERNAME");
+        }
+        assert!(
+            matches!(result, Err(BridgeError::InvalidConfig(_))),
+            "set-but-empty (VAR=\"\") must not skip the DEFAULT_IGGY_USERNAME fallback silently: \
+             {result:?}"
         );
     }
 
@@ -243,7 +301,7 @@ mod tests {
         }
 
         assert_eq!(
-            result.expect("valid config").topic_mapping.default_stream,
+            result.expect("valid config").topic_mapping.default_stream(),
             "from-toml"
         );
     }

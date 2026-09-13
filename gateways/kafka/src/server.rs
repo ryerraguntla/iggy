@@ -890,11 +890,15 @@ mod tests {
         assert_eq!(&payload[4..], &body);
     }
 
-    /// `#[serial]`, unkeyed (shares `bridge::config`'s and `main`'s default group, the whole
-    /// binary's implicit lock): `init_tracing` reads `RUST_LOG` via `EnvFilter::try_from_default_env`,
-    /// and edition 2024's `env::set_var`/`remove_var` are unsound against *any* concurrent env
-    /// read in another thread, not just a write to the same key - a set/remove elsewhere in this
-    /// binary racing this read is exactly the hazard, regardless of which var either side touches.
+    /// `#[serial]`, unkeyed (shares `bridge::config`'s default group - both this module and
+    /// `bridge::config` compile into the same lib unit-test binary. `main.rs`'s own `#[serial]`
+    /// test does NOT share this group: `main.rs` is the separate `iggy-gateway-kafka` bin's own
+    /// test harness, a different process, and `serial_test`'s mutex is process-local - see that
+    /// test's own doc comment for the mirror-image note): `init_tracing` reads `RUST_LOG` via
+    /// `EnvFilter::try_from_default_env`, and edition 2024's `env::set_var`/`remove_var` are
+    /// unsound against *any* concurrent env read in another thread, not just a write to the same
+    /// key - a set/remove elsewhere in this binary racing this read is exactly the hazard,
+    /// regardless of which var either side touches.
     #[test]
     #[serial]
     fn init_tracing_is_idempotent() {

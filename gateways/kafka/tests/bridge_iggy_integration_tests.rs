@@ -189,65 +189,51 @@ impl PortGuard {
     }
 }
 
-/// Builds `iggy-server` (idempotent - a no-op rebuild once already current) and returns its path.
+/// Locates the already-built `iggy-server` binary. Does not build it - see this crate's
+/// `docs/TEST_SUITE.md` for the prerequisite, the same one `core/integration`'s own
+/// server-spawning tests already carry.
 ///
-/// Not `assert_cmd::Command::cargo_bin`: that only resolves `CARGO_BIN_EXE_*` for binaries owned
-/// by *this* package (confirmed - it fails here with "available binary names are
-/// iggy-gateway-kafka"). `iggy-server` belongs to the separate `server` crate, and neither this
-/// crate nor `core/integration` (same `Command::cargo_bin` pattern) declares that crate as a
-/// dependency just to make its binary buildable. Driving `cargo build` directly sidesteps that
-/// entirely - no Cargo.toml dependency edge needed on a crate this one otherwise never touches.
-///
-/// Reads the artifact path from `--message-format=json` rather than guessing
-/// `target/debug/iggy-server`: a guessed path breaks under `CARGO_TARGET_DIR` (this workspace's
-/// own coverage CI sets it), `--release`, or a `--target` triple subdirectory, none of which
-/// `cargo build`'s own JSON output leaves to guesswork.
-fn iggy_server_binary() -> &'static PathBuf {
-    static BINARY_PATH: OnceLock<PathBuf> = OnceLock::new();
-    BINARY_PATH.get_or_init(|| {
-        let output = Command::new(env!("CARGO"))
-            .args([
-                "build",
-                "--package",
-                "server",
-                "--bin",
-                "iggy-server",
-                "--message-format=json",
-            ])
-            .output()
-            .expect("run cargo build for iggy-server");
-        assert!(
-            output.status.success(),
-            "cargo build --package server --bin iggy-server failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .find_map(|message| {
-                if message.get("reason")? == "compiler-artifact"
-                    && message.get("target")?.get("name")? == "iggy-server"
-                {
-                    message.get("executable")?.as_str().map(PathBuf::from)
-                } else {
-                    None
-                }
-            })
-            .expect("cargo build --message-format=json reported no iggy-server executable")
-    })
+/// `assert_cmd::cargo::cargo_bin`, matching `core/integration`'s own
+/// `harness::handle::server::start` - not a from-scratch `cargo build` invocation. An earlier
+/// version of this function drove `cargo build --package server --bin iggy-server` directly,
+/// reasoning that `Command::cargo_bin` "only resolves `CARGO_BIN_EXE_*` for binaries owned by
+/// *this* package" - true of the `CARGO_BIN_EXE_*` env-var lookup alone, but `cargo_bin` falls
+/// back to `legacy_cargo_bin` when that's unset, which derives the target directory from
+/// `env::current_exe()` (this test binary's own path) and looks for a same-named file there -
+/// correct under `CARGO_TARGET_DIR`, `--release`, or a `--target` triple subdirectory precisely
+/// because it reads back from where cargo actually placed *this* binary, not a guessed path. That
+/// version also re-ran a `cargo build` from every one of this file's server-spawning tests
+/// (nextest runs each as its own process, so the `OnceLock` memoized nothing across them),
+/// serialized by `.config/nextest.toml`'s `kafka_bridge` test-group but still real, avoidable
+/// per-test overhead this version has none of.
+fn iggy_server_binary() -> PathBuf {
+    assert_cmd::cargo::cargo_bin("iggy-server")
 }
 
 struct TestServer {
     child: Child,
     address: String,
+    password: String,
     _port_guard: PortGuard,
 }
 
 impl TestServer {
-    /// Spawns `iggy-server` with an isolated temp data dir and a locked TCP port, then blocks
-    /// until a bridge connection succeeds or the startup budget is exhausted.
+    /// Spawns `iggy-server` with the default `iggy`/`iggy` root credentials. See
+    /// [`Self::spawn_with_password`] for the general form.
     async fn spawn(data_dir: &std::path::Path) -> Self {
+        Self::spawn_with_password(data_dir, "iggy").await
+    }
+
+    /// Spawns `iggy-server` with an isolated temp data dir, a locked TCP port, and the given root
+    /// password, then blocks until its listener is ready or the startup budget is exhausted.
+    ///
+    /// A dedicated password parameter (not just the `spawn()` default everywhere) lets a
+    /// password-shaped regression test (special characters, say) reuse this harness's
+    /// `PortGuard`/graceful-`Drop`/`wait_ready` machinery instead of hand-rolling a second,
+    /// `Drop`-less spawn: a `Drop`-less copy has no guard to run `graceful_kill` on a panic before
+    /// its assertions, orphaning a process that still holds its `PortGuard` slot, which then
+    /// fails the next test that draws that slot to bind.
+    async fn spawn_with_password(data_dir: &std::path::Path, password: &str) -> Self {
         let port_guard = PortGuard::acquire();
         let address = format!("127.0.0.1:{}", port_guard.port);
 
@@ -273,12 +259,13 @@ impl TestServer {
             // a fresh server provisions no loginable root user at all, and every bridge connect
             // attempt fails with "invalid credentials" no matter what this test passes.
             .env("IGGY_ROOT_USERNAME", "iggy")
-            .env("IGGY_ROOT_PASSWORD", "iggy");
+            .env("IGGY_ROOT_PASSWORD", password);
         let child = command.spawn().expect("spawn iggy-server");
 
         let mut server = Self {
             child,
             address,
+            password: password.to_string(),
             _port_guard: port_guard,
         };
         server.wait_ready().await;
@@ -326,29 +313,38 @@ impl TestServer {
         IggyBridgeConfig {
             address: self.address.clone(),
             username: "iggy".to_string(),
-            password: SecretString::from("iggy"),
-            topic_mapping: TopicMapping {
-                default_stream: "kafka".to_string(),
-                topics: HashMap::new(),
-            },
+            password: SecretString::from(self.password.clone()),
+            topic_mapping: TopicMapping::new("kafka".to_string(), HashMap::new())
+                .expect("valid mapping for this test's fixture data"),
         }
     }
 }
 
 /// SIGTERM, wait up to `SIGTERM_TIMEOUT`, then SIGKILL if it hasn't exited. Mirrors
 /// `core/integration`'s own `harness::handle::common::graceful_kill` (not reused directly - that
-/// crate is not a dependency this one wants: heavyweight, and pulling it in for one function would
-/// make every `core/sdk` change re-run this crate's server-spawning tests, per `Cargo.toml`'s own
-/// dependency-edge note). A bare SIGKILL skips `iggy-server`'s shutdown path entirely, which is a
-/// materially different exit than what the binary is actually built to do on `SIGTERM` -
-/// `.kill()` alone bypassed that in every test run before this fix.
+/// crate is heavyweight, and pulling it in for one function isn't worth it; this crate already
+/// depends directly on `iggy`/`core/sdk`, so `core/integration` wouldn't add a *new*
+/// core/sdk-change-reruns-these-tests edge, just an unrelated dependency). A bare SIGKILL skips
+/// `iggy-server`'s shutdown path entirely, which is a materially different exit than what the
+/// binary is actually built to do on `SIGTERM` - `.kill()` alone bypassed that in every test run
+/// before this fix.
 const SIGTERM_TIMEOUT: Duration = Duration::from_secs(5);
 const SIGKILL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 fn graceful_kill(child: &mut Child) {
+    // `wait_ready` calls `try_wait()` too (and panics on an early exit, unwinding into this via
+    // `Drop`) - if it already reaped the child, `child.id()` is a PID the OS is free to hand to an
+    // unrelated process by the time we get here, and a raw `libc::kill` (unlike `std::Child::kill`,
+    // which checks its own cached exit status first and no-ops instead) has no such guard against
+    // signaling that PID anyway. Checking here first closes the same gap `std` already closes for
+    // its own `kill`.
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
+
     let pid = child.id() as libc::pid_t;
-    // Safety: `pid` is this process's own live child, obtained from `Child::id` immediately
-    // above; sending it a signal is exactly what `Child::kill` itself does internally.
+    // Safety: `pid` is this process's own live child, confirmed by the `try_wait` check above;
+    // sending it a signal is exactly what `Child::kill` itself does internally.
     unsafe {
         libc::kill(pid, libc::SIGTERM);
     }
@@ -472,13 +468,16 @@ async fn bridge_operations_report_the_kafka_side_name_through_a_real_topic_mappi
     let data_dir = tempfile::tempdir().expect("tempdir");
     let server = TestServer::spawn(data_dir.path()).await;
     let mut config = server.test_config();
-    config.topic_mapping.topics.insert(
+    let mut topics = HashMap::new();
+    topics.insert(
         "orders".to_string(),
         TopicOverride {
             stream: "billing".to_string(),
             topic: "orders_v2".to_string(),
         },
     );
+    config.topic_mapping = TopicMapping::new("kafka".to_string(), topics)
+        .expect("valid mapping for this test's fixture data");
     let bridge = IggyBridge::connect(config)
         .await
         .expect("bridge should connect to a ready server");
@@ -710,49 +709,11 @@ async fn ensure_topic_targets_the_streams_live_incarnation_after_a_delete_and_re
 #[serial]
 async fn connect_succeeds_with_password_containing_special_characters() {
     let data_dir = tempfile::tempdir().expect("tempdir");
-    let port_guard = PortGuard::acquire();
-    let address = format!("127.0.0.1:{}", port_guard.port);
-    let password = "p@ss:word";
+    let server = TestServer::spawn_with_password(data_dir.path(), "p@ss:word").await;
 
-    let mut command = Command::new(iggy_server_binary());
-    command
-        .env("IGGY_PATH", data_dir.path().display().to_string())
-        .env("IGGY_TCP_ADDRESS", &address)
-        .env("IGGY_HTTP_ENABLED", "false")
-        .env("IGGY_QUIC_ENABLED", "false")
-        .env("IGGY_WEBSOCKET_ENABLED", "false")
-        .env("IGGY_SHARDING_PIN_CORES", "false")
-        .env("IGGY_ROOT_USERNAME", "iggy")
-        .env("IGGY_ROOT_PASSWORD", password);
-    let mut child = command.spawn().expect("spawn iggy-server");
-
-    let config = IggyBridgeConfig {
-        address,
-        username: "iggy".to_string(),
-        password: SecretString::from(password),
-        topic_mapping: TopicMapping {
-            default_stream: "kafka".to_string(),
-            topics: HashMap::new(),
-        },
-    };
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    let result = loop {
-        match IggyBridge::connect(config.clone()).await {
-            Ok(bridge) => break Ok(bridge),
-            Err(err) => {
-                if tokio::time::Instant::now() >= deadline {
-                    break Err(err);
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        }
-    };
-
-    let _ = child.kill();
-    let _ = child.wait();
-
-    result.expect("bridge must connect with a password containing '@' and ':'");
+    IggyBridge::connect(server.test_config())
+        .await
+        .expect("bridge must connect with a password containing '@' and ':'");
 }
 
 /// Acceptance criterion: "no panics on Iggy unreachable at handler boundary." Connects to a port
@@ -765,10 +726,8 @@ async fn connect_to_unreachable_iggy_returns_err_not_panic() {
         address: format!("127.0.0.1:{}", port_guard.port),
         username: "iggy".to_string(),
         password: SecretString::from("iggy"),
-        topic_mapping: TopicMapping {
-            default_stream: "kafka".to_string(),
-            topics: HashMap::new(),
-        },
+        topic_mapping: TopicMapping::new("kafka".to_string(), HashMap::new())
+            .expect("valid mapping for this test's fixture data"),
     };
 
     let result = IggyBridge::connect(config).await;
@@ -790,10 +749,8 @@ async fn connect_to_a_black_hole_address_times_out_instead_of_hanging() {
         address: "192.0.2.1:1234".to_string(),
         username: "iggy".to_string(),
         password: SecretString::from("iggy"),
-        topic_mapping: TopicMapping {
-            default_stream: "kafka".to_string(),
-            topics: HashMap::new(),
-        },
+        topic_mapping: TopicMapping::new("kafka".to_string(), HashMap::new())
+            .expect("valid mapping for this test's fixture data"),
     };
 
     let start = tokio::time::Instant::now();
@@ -826,4 +783,136 @@ async fn close_succeeds_against_a_live_connection() {
         .expect("bridge should connect to a ready server");
 
     bridge.close().await.expect("close must succeed");
+}
+
+/// Kafka-client-observable regression test for the auth-mapping fix: a wrong bridge password is
+/// the *bridge's own* misconfiguration (`IGGY_KAFKA_IGGY_PASSWORD`), not anything the Kafka client
+/// did - the SDK's own sign-in path raises `InvalidPassword`/`InvalidCredentials` for this, not
+/// `Unauthorized` (that one means a real, authenticated-but-forbidden ACL problem). Mapping this
+/// to `TOPIC_AUTHORIZATION_FAILED` (29) would hand a real Kafka client library a fatal,
+/// non-retriable "Not authorized to access topics" it has no way to act on. Asserts the actual
+/// wire code a handler would send, not just the `BridgeError` variant - that number is what a real
+/// Kafka client's error-handling logic branches on.
+#[tokio::test]
+#[serial]
+async fn connect_with_wrong_password_maps_to_unknown_server_error_not_authorization_failed() {
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    let server = TestServer::spawn_with_password(data_dir.path(), "the-real-password").await;
+
+    let mut config = server.test_config();
+    config.password = SecretString::from("a-completely-wrong-password");
+    // `IggyBridge` derives no `Debug`, so `expect_err`/`unwrap_err` (which require `T: Debug` on
+    // the `Ok` side too) don't apply here - match it out by hand instead.
+    let Err(err) = IggyBridge::connect(config).await else {
+        panic!("wrong password must not connect")
+    };
+
+    assert_eq!(
+        err.to_kafka_error_code(),
+        iggy_gateway_kafka::protocol::api::ERROR_UNKNOWN_SERVER_ERROR,
+        "a bridge-side credential error must not surface as the Kafka client's own \
+         TOPIC_AUTHORIZATION_FAILED (29): {err:?}"
+    );
+    assert_ne!(
+        err.to_kafka_error_code(),
+        iggy_gateway_kafka::protocol::api::ERROR_TOPIC_AUTHORIZATION_FAILED,
+        "must not blame the Kafka client's ACLs for the bridge's own wrong password: {err:?}"
+    );
+}
+
+/// End-to-end regression test for the batch high-watermark API: creates a 3-partition topic,
+/// produces a different message count to each partition, and confirms one `high_watermarks` call
+/// reports all three correctly and in the order requested - not just that a single-partition call
+/// still works (that's `high_watermark_reflects_produced_messages`), but that the batching itself
+/// keeps each partition's own count separate rather than conflating them.
+#[tokio::test]
+#[serial]
+async fn high_watermarks_reports_every_requested_partition_from_one_round_trip() {
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    let server = TestServer::spawn(data_dir.path()).await;
+    let bridge = IggyBridge::connect(server.test_config())
+        .await
+        .expect("bridge should connect to a ready server");
+
+    bridge
+        .ensure_stream_and_topic("orders", 3)
+        .await
+        .expect("stream and topic must exist before producing");
+
+    let stream_id = Identifier::named("kafka").expect("valid stream name");
+    let topic_id = Identifier::named("orders").expect("valid topic name");
+    let client = raw_client(&server).await;
+    for (partition, count) in [(0u32, 1usize), (1, 3), (2, 0)] {
+        if count == 0 {
+            continue;
+        }
+        let mut messages: Vec<IggyMessage> = (0..count)
+            .map(|i| IggyMessage::from(format!("partition-{partition}-message-{i}")))
+            .collect();
+        client
+            .send_messages(
+                &stream_id,
+                &topic_id,
+                &Partitioning::partition_id(partition),
+                &mut messages,
+            )
+            .await
+            .expect("send messages to this partition");
+    }
+
+    let watermarks = bridge
+        .high_watermarks("orders", &[0, 1, 2])
+        .await
+        .expect("all three partitions exist on this topic");
+
+    assert_eq!(
+        watermarks,
+        vec![(0, 1), (1, 3), (2, 0)],
+        "must report each partition's own watermark, in the order requested"
+    );
+}
+
+/// Kafka-client-observable regression test for topic-name validation: a whitespace-padded name is
+/// not just unlikely for a real Kafka client to send, it's impossible - `Topic.legalChars` has no
+/// space in it - so this exercises the defense-in-depth path a non-conformant client could still
+/// reach, and asserts the wire code (`INVALID_TOPIC_EXCEPTION`, 17) a real client library would
+/// recognize as "the topic name itself is the problem," not a generic server error.
+#[tokio::test]
+#[serial]
+async fn ensure_stream_and_topic_rejects_a_padded_kafka_topic_name() {
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    let server = TestServer::spawn(data_dir.path()).await;
+    let bridge = IggyBridge::connect(server.test_config())
+        .await
+        .expect("bridge should connect to a ready server");
+
+    let err = bridge
+        .ensure_stream_and_topic(" orders ", 1)
+        .await
+        .expect_err("a padded Kafka topic name must not silently create a padded Iggy topic");
+
+    assert!(
+        matches!(err, BridgeError::InvalidKafkaTopicName { .. }),
+        "expected InvalidKafkaTopicName, got {err:?}"
+    );
+    assert_eq!(
+        err.to_kafka_error_code(),
+        iggy_gateway_kafka::protocol::api::ERROR_INVALID_TOPIC_EXCEPTION
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn high_watermark_rejects_a_padded_kafka_topic_name() {
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    let server = TestServer::spawn(data_dir.path()).await;
+    let bridge = IggyBridge::connect(server.test_config())
+        .await
+        .expect("bridge should connect to a ready server");
+
+    let err = bridge
+        .high_watermark(" orders ", 0)
+        .await
+        .expect_err("a padded Kafka topic name must be rejected before any Iggy lookup");
+    assert!(matches!(err, BridgeError::InvalidKafkaTopicName { .. }));
 }

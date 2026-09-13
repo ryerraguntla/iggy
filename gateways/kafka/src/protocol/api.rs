@@ -52,12 +52,23 @@ pub const ERROR_NONE: i16 = 0;
 pub const ERROR_UNKNOWN_TOPIC_OR_PARTITION: i16 = 3;
 /// Retriable; Produce stub uses this until the Iggy bridge persists records.
 pub const ERROR_NOT_LEADER_OR_FOLLOWER: i16 = 6;
-/// `bridge`'s mapping for `IggyError::TransientNotCommitted`.
+/// `bridge`'s mapping for `IggyError::TransientNotCommitted`: the request's outcome is genuinely
+/// unknown (neither confirmed applied nor confirmed rejected).
 ///
-/// The request's outcome is genuinely unknown (neither confirmed applied nor confirmed rejected),
-/// so a client must not blindly retry a Produce as if it were a plain retriable failure - that
-/// risks writing a duplicate.
+/// Retriable in real Kafka too (`TimeoutException extends RetriableException`; the Java producer's
+/// `Sender.canRetry` treats it the same as `NOT_LEADER_OR_FOLLOWER`) - this is not chosen to make
+/// clients stop retrying. It is chosen because it is the code a real broker sends for the same
+/// unknown-outcome shape (an ack that timed out with no confirmation either way), and Kafka has no
+/// dedicated "outcome unknown, retry could duplicate" code. The duplicate-write risk on retry is
+/// real regardless of which retriable code is sent; it closes only once `#3535` has an idempotent
+/// produce path, not by picking a different error code here.
 pub const ERROR_REQUEST_TIMED_OUT: i16 = 7;
+/// `bridge`'s mapping for a Kafka-side topic name that fails Kafka's own naming rules.
+///
+/// Empty, whitespace-padded, over 249 bytes, or outside `[A-Za-z0-9._-]`, checked before any Iggy
+/// call is made - a real Kafka client library validates topic names client-side and would never
+/// send one of these, but a raw/non-conformant client could.
+pub const ERROR_INVALID_TOPIC_EXCEPTION: i16 = 17;
 /// Closest fit for an Iggy permission/credential rejection in `bridge`'s error mapping.
 ///
 /// There is no bridge-side SASL exchange yet (`#3549`), so `SASL_AUTHENTICATION_FAILED` would
